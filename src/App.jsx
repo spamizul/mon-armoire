@@ -215,17 +215,29 @@ export default function App() {
 
   useEffect(() => {
     if (!loaded) return;
-    localStorage.setItem("mon-armoire-items", JSON.stringify(items));
+    try {
+      localStorage.setItem("mon-armoire-items", JSON.stringify(items));
+    } catch (err) {
+      alert("Le stockage de ton téléphone est plein (souvent à cause de trop de photos). Essaie de retirer une photo ou un vêtement pour libérer de la place.");
+    }
   }, [items, loaded]);
 
   useEffect(() => {
     if (!loaded) return;
-    localStorage.setItem("mon-armoire-outfits", JSON.stringify(outfits));
+    try {
+      localStorage.setItem("mon-armoire-outfits", JSON.stringify(outfits));
+    } catch (err) {
+      alert("Le stockage de ton téléphone est plein (souvent à cause de trop de photos). Essaie de retirer une photo ou un vêtement pour libérer de la place.");
+    }
   }, [outfits, loaded]);
 
   useEffect(() => {
     if (!loaded) return;
-    localStorage.setItem("mon-armoire-agenda", JSON.stringify(agenda));
+    try {
+      localStorage.setItem("mon-armoire-agenda", JSON.stringify(agenda));
+    } catch (err) {
+      alert("Le stockage de ton téléphone est plein (souvent à cause de trop de photos). Essaie de retirer une photo ou un vêtement pour libérer de la place.");
+    }
   }, [agenda, loaded]);
 
   // ── ACTIONS SUR LES VÊTEMENTS ──────────────
@@ -283,16 +295,19 @@ export default function App() {
   // en dessinant uniquement cette zone sur un canvas, puis en l'exportant en data URL.
   async function getCroppedImage(imageSrc, cropAreaPixels) {
     const image = await loadImage(imageSrc);
+    // On plafonne la taille de sortie — la photo ne s'affiche jamais à plus de
+    // 200px dans l'appli, pas la peine de stocker beaucoup plus lourd que ça.
+    const outputSize = Math.min(cropAreaPixels.width, 800);
     const canvas = document.createElement("canvas");
-    canvas.width = cropAreaPixels.width;
-    canvas.height = cropAreaPixels.height;
+    canvas.width = outputSize;
+    canvas.height = outputSize;
     const ctx = canvas.getContext("2d");
     ctx.drawImage(
       image,
       cropAreaPixels.x, cropAreaPixels.y, cropAreaPixels.width, cropAreaPixels.height,
-      0, 0, cropAreaPixels.width, cropAreaPixels.height
+      0, 0, outputSize, outputSize
     );
-    return canvas.toDataURL("image/jpeg", 0.9);
+    return canvas.toDataURL("image/jpeg", 0.85);
   }
 
   // Valide le recadrage : découpe l'image et l'enregistre dans le formulaire.
