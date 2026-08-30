@@ -479,7 +479,7 @@ export default function App() {
 
   // Pioche un vêtement dans une catégorie, en tenant compte de tous les critères choisis
   // et de la pièce en tête si une a été choisie.
-  function randomFrom(category) {
+  function randomFrom(category, colorAnchor) {
     const baseItem = wizardBaseItemId ? items.find((i) => i.id === wizardBaseItemId) : null;
     if (baseItem && baseItem.category === category) return baseItem; // la pièce en tête est toujours incluse
 
@@ -501,7 +501,16 @@ export default function App() {
       if (filtered.length > 0) pool = filtered;
     }
     if (genColorFamily) {
+      // Un critère couleur choisi explicitement dans le questionnaire est prioritaire sur tout.
       const filtered = pool.filter((i) => hexToColorFamily(i.hex) === genColorFamily);
+      if (filtered.length > 0) pool = filtered;
+    } else if (colorAnchor) {
+      // Sans choix explicite, on garde la cohérence avec la première pièce de la tenue :
+      // soit la même famille de couleur, soit du neutre (qui va avec tout).
+      const filtered = pool.filter((i) => {
+        const fam = hexToColorFamily(i.hex);
+        return fam === colorAnchor || fam === "Neutres";
+      });
       if (filtered.length > 0) pool = filtered;
     }
 
@@ -520,23 +529,34 @@ export default function App() {
   function suggestOutfit() {
     const baseItem = wizardBaseItemId ? items.find((i) => i.id === wizardBaseItemId) : null;
 
+    // "L'ancre couleur" : la famille de couleur de la toute première pièce choisie.
+    // Une fois connue, les pièces suivantes sont piochées en priorité dans cette même
+    // famille ou en neutre — pour éviter une tenue où chaque pièce jure avec les autres.
+    let colorAnchor = null;
+    function pick(category) {
+      const item = randomFrom(category, colorAnchor);
+      if (item && !colorAnchor && !genColorFamily) colorAnchor = hexToColorFamily(item.hex);
+      return item;
+    }
+
     let base;
     if (baseItem && baseItem.category === "Robe") {
       base = [baseItem];
+      colorAnchor = hexToColorFamily(baseItem.hex);
     } else {
       // Une fois sur trois environ, on part sur une robe plutôt que haut + bas séparés
       // (si le dressing en contient au moins une, sinon on retombe sur haut + bas) —
       // sauf si la pièce en tête est justement un haut ou un bas, auquel cas on la respecte.
       const forceTopBottom = baseItem && (baseItem.category === "Haut" || baseItem.category === "Bas");
       const tryDress = !forceTopBottom && Math.random() < 0.33 && items.some((i) => i.category === "Robe");
-      base = tryDress ? [randomFrom("Robe")] : [randomFrom("Haut"), randomFrom("Bas")];
+      base = tryDress ? [pick("Robe")] : [pick("Haut"), pick("Bas")];
     }
 
-    const picks = [...base, randomFrom("Chaussures")];
+    const picks = [...base, pick("Chaussures")];
     const forceInclude = (cat) => baseItem && baseItem.category === cat;
-    if (forceInclude("Chemise") || Math.random() > 0.5) picks.push(randomFrom("Chemise"));
-    if (forceInclude("Veste") || Math.random() > 0.5) picks.push(randomFrom("Veste"));
-    if (forceInclude("Accessoire") || Math.random() > 0.5) picks.push(randomFrom("Accessoire"));
+    if (forceInclude("Chemise") || Math.random() > 0.5) picks.push(pick("Chemise"));
+    if (forceInclude("Veste") || Math.random() > 0.5) picks.push(pick("Veste"));
+    if (forceInclude("Accessoire") || Math.random() > 0.5) picks.push(pick("Accessoire"));
     const found = picks.filter(Boolean);
     setSelectedIds(found.map((i) => i.id));
     setOutfitName(found.length >= 2 ? "Tenue suggérée" : "");
@@ -889,8 +909,6 @@ export default function App() {
       <div
         className="max-w-3xl mx-auto px-5 pt-10 app-content"
         style={{ paddingBottom: 100 }}
-        onTouchStart={!detailItem ? handleTouchStart : undefined}
-        onTouchEnd={!detailItem ? handleTouchEnd : undefined}
       >
         {/* ── EN-TÊTE — uniquement sur la page Profil ── */}
         {view === "accueil" && (
@@ -1345,6 +1363,18 @@ export default function App() {
                   );
                 })}
               </div>
+            </div>
+
+            {/* Couleur — sert de vignette de secours sans photo, et alimente le générateur de tenue */}
+            <div className="mb-5">
+              <p className="text-xs font-medium mb-2" style={{ opacity: 0.6 }}>Couleur</p>
+              <input
+                type="color"
+                value={detailItem.hex}
+                onChange={(e) => setItems((prev) => prev.map((i) => i.id === detailItem.id ? { ...i, hex: e.target.value } : i))}
+                className="w-12 h-9 rounded cursor-pointer"
+                style={{ border: `1px solid ${COLORS.line}` }}
+              />
             </div>
 
             {/* Saisons */}
