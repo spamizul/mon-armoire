@@ -326,6 +326,15 @@ export default function App() {
     return data.publicUrl;
   }
 
+  // Supprime un fichier du stockage Supabase à partir de son lien public.
+  // "Best-effort" : si ça échoue (lien déjà supprimé, vieille photo en base64
+  // d'avant Supabase, etc.), on l'ignore silencieusement plutôt que de bloquer.
+  function deleteFromStorage(url) {
+    if (!url || !url.includes("/storage/v1/object/public/photos/")) return;
+    const path = url.split("/storage/v1/object/public/photos/")[1];
+    if (path) supabase.storage.from("photos").remove([path]).catch(() => {});
+  }
+
   async function confirmCrop() {
     if (!croppedAreaPixels) return;
     setUploadingPhoto(true);
@@ -337,7 +346,13 @@ export default function App() {
         // On modifie la photo d'un vêtement déjà enregistré, depuis sa fiche.
         // On garde aussi "photoOriginal" (la source utilisée pour ce recadrage), pour pouvoir
         // rouvrir le recadreur plus tard sur l'intégralité de l'image plutôt que sur un carré déjà coupé.
+        const oldItem = items.find((i) => i.id === cropTargetItemId);
         setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: photoUrl, photoOriginal: originalUrl } : i)));
+        // On retire les anciennes versions du stockage, maintenant qu'elles ne sont plus utilisées.
+        if (oldItem) {
+          deleteFromStorage(oldItem.photo);
+          deleteFromStorage(oldItem.photoOriginal);
+        }
       } else {
         setForm((prev) => ({ ...prev, photo: photoUrl, photoOriginal: originalUrl }));
       }
@@ -386,6 +401,13 @@ export default function App() {
   }
 
   function removeItem(id) {
+    // On supprime aussi ses photos du stockage en ligne, pour ne pas laisser
+    // de fichiers orphelins qui occuperaient de la place pour rien.
+    const item = items.find((i) => i.id === id);
+    if (item) {
+      deleteFromStorage(item.photo);
+      deleteFromStorage(item.photoOriginal);
+    }
     setItems((prev) => prev.filter((item) => item.id !== id));
     // On enlève aussi cet id de tous les "va bien avec" qui le référençaient.
     setItems((prev) => prev.map((i) => ({ ...i, pairsWith: (i.pairsWith || []).filter((p) => p !== id) })));
