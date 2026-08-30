@@ -242,6 +242,9 @@ export default function App() {
       setCropTargetItemId(targetItemId || null);
       setShowCropModal(true);
     };
+    reader.onerror = () => {
+      alert("Cette photo n'a pas pu être ouverte. Essaie avec une autre photo (ou une version JPEG/PNG si c'est un format spécial comme HEIC).");
+    };
     reader.readAsDataURL(file);
     e.target.value = ""; // pour pouvoir resélectionner le même fichier plus tard si besoin
   }
@@ -275,12 +278,16 @@ export default function App() {
   // Valide le recadrage : découpe l'image et l'enregistre dans le formulaire.
   async function confirmCrop() {
     if (!croppedAreaPixels) return;
-    const croppedDataUrl = await getCroppedImage(rawImageSrc, croppedAreaPixels);
-    if (cropTargetItemId) {
-      // On modifie la photo d'un vêtement déjà enregistré, depuis sa fiche.
-      setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: croppedDataUrl } : i)));
-    } else {
-      setForm((prev) => ({ ...prev, photo: croppedDataUrl }));
+    try {
+      const croppedDataUrl = await getCroppedImage(rawImageSrc, croppedAreaPixels);
+      if (cropTargetItemId) {
+        // On modifie la photo d'un vêtement déjà enregistré, depuis sa fiche.
+        setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: croppedDataUrl } : i)));
+      } else {
+        setForm((prev) => ({ ...prev, photo: croppedDataUrl }));
+      }
+    } catch (err) {
+      alert("Le recadrage de cette photo a échoué. Essaie avec une autre photo.");
     }
     setShowCropModal(false);
     setRawImageSrc(null);
@@ -1329,13 +1336,33 @@ export default function App() {
               ) : (
                 <div style={{ background: detailItem.hex, height: 200 }} />
               )}
-              <label
-                className="absolute top-2 right-2 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs cursor-pointer"
-                style={{ background: "rgba(0,0,0,0.55)", color: "white" }}
-              >
-                <Camera size={13} /> {detailItem.photo ? "Modifier la photo" : "Ajouter une photo"}
-                <input type="file" accept="image/*" onChange={(e) => handlePhotoChange(e, detailItem.id)} className="hidden" />
-              </label>
+              <div className="absolute top-2 right-2 flex gap-1.5">
+                {detailItem.photo && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // On repart de la photo déjà enregistrée (pas d'un nouveau fichier),
+                      // juste pour ajuster son cadrage.
+                      setRawImageSrc(detailItem.photo);
+                      setCropPosition({ x: 0, y: 0 });
+                      setCropZoom(1);
+                      setCropTargetItemId(detailItem.id);
+                      setShowCropModal(true);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs"
+                    style={{ background: "rgba(0,0,0,0.55)", color: "white" }}
+                  >
+                    <Search size={13} /> Recadrer
+                  </button>
+                )}
+                <label
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs cursor-pointer"
+                  style={{ background: "rgba(0,0,0,0.55)", color: "white" }}
+                >
+                  <Camera size={13} /> {detailItem.photo ? "Modifier la photo" : "Ajouter une photo"}
+                  <input type="file" accept="image/*" onChange={(e) => handlePhotoChange(e, detailItem.id)} className="hidden" />
+                </label>
+              </div>
               <div className="p-4">
                 <p className="display text-xl" style={{ fontWeight: 600 }}>{detailItem.name}</p>
               </div>
