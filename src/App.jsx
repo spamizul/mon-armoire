@@ -52,11 +52,11 @@ function hexToColorFamily(hex) {
 // à "tenues" glisse vers la gauche, l'inverse glisse vers la droite.
 const TAB_ORDER = ["accueil", "dressing", "tenues", "agenda"];
 
-function getGreeting() {
+function getGreeting(name) {
   const hour = new Date().getHours();
-  if (hour < 12) return "Bonjour Lucie ! Belle journée en préparation ✨";
-  if (hour < 18) return "Bon après-midi Lucie ! On compose une tenue ?";
-  return "Bonsoir Lucie ! Un œil sur la tenue de demain ?";
+  if (hour < 12) return `Bonjour ${name} ! Belle journée en préparation ✨`;
+  if (hour < 18) return `Bon après-midi ${name} ! On compose une tenue ?`;
+  return `Bonsoir ${name} ! Un œil sur la tenue de demain ?`;
 }
 
 // Formate une date ISO en "27 août" par exemple, pour l'affichage de l'historique.
@@ -96,6 +96,9 @@ export default function App() {
   // { "2026-08-29": 123, "2026-09-01": 456 }
   const [agenda, setAgenda] = useState({});
   const [loaded, setLoaded] = useState(false);
+  // Prénom de la personne, demandé une seule fois au tout premier lancement.
+  const [userName, setUserName] = useState(null);
+  const [nameInput, setNameInput] = useState("");
   // Météo du jour, affichée sur la page Profil. "idle"/"loading"/"granted"/"denied"/"error".
   const [weather, setWeather] = useState(null);
   const [weatherStatus, setWeatherStatus] = useState("idle");
@@ -224,6 +227,8 @@ export default function App() {
     setOutfits(savedOutfits ? JSON.parse(savedOutfits) : []);
     const savedAgenda = localStorage.getItem("mon-armoire-agenda");
     setAgenda(savedAgenda ? JSON.parse(savedAgenda) : {});
+    const savedName = localStorage.getItem("mon-armoire-username");
+    if (savedName) setUserName(savedName);
     setLoaded(true);
     requestWeather();
 
@@ -610,6 +615,14 @@ export default function App() {
   // Demande la position, puis va chercher la météo du jour via Open-Meteo
   // (service gratuit, sans clé ni compte). Appelée au démarrage et rejouable
   // via le bouton "Activer la météo" si la personne avait d'abord refusé.
+  // Enregistre le prénom saisi à l'écran de bienvenue, une fois pour toutes sur cet appareil.
+  function saveUserName() {
+    const trimmed = nameInput.trim();
+    if (!trimmed) return;
+    localStorage.setItem("mon-armoire-username", trimmed);
+    setUserName(trimmed);
+  }
+
   function requestWeather() {
     if (!navigator.geolocation) {
       setWeatherStatus("error");
@@ -846,6 +859,40 @@ export default function App() {
     );
   }
 
+  // Écran de bienvenue, affiché une seule fois : tant qu'aucun prénom n'est enregistré
+  // sur cet appareil, on ne montre pas encore le contenu de l'appli.
+  if (!userName) {
+    return (
+      <div style={{ background: "#FFFFFF", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+        <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap'); * { font-family: 'Inter', sans-serif; }`}</style>
+        <div style={{ width: "100%", maxWidth: 320, textAlign: "center" }}>
+          <div style={{ width: 56, height: 56, borderRadius: "50%", background: "#FF4B33", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
+            <Shirt size={26} color="#FFFFFF" />
+          </div>
+          <p style={{ fontSize: 22, fontWeight: 700, color: "#111111", marginBottom: 8 }}>Bienvenue dans Mon Armoire</p>
+          <p style={{ fontSize: 14, color: "#999999", marginBottom: 20 }}>Comment tu t'appelles ?</p>
+          <input
+            value={nameInput}
+            onChange={(e) => setNameInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && saveUserName()}
+            placeholder="Ton prénom"
+            className="w-full px-4 py-3 rounded-full text-sm text-center mb-3"
+            style={{ border: "1px solid #EBEBEB", outline: "none" }}
+            autoFocus
+          />
+          <button
+            onClick={saveUserName}
+            disabled={!nameInput.trim()}
+            className="w-full px-4 py-3 rounded-full text-sm text-white"
+            style={{ background: "#FF4B33", opacity: nameInput.trim() ? 1 : 0.4 }}
+          >
+            Commencer
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ background: COLORS.ivory, minHeight: "100vh", color: COLORS.ink }}>
       <style>{`
@@ -911,7 +958,7 @@ export default function App() {
         {view === "accueil" && (
           <div key={view} className={slideDir === "right" ? "slide-right" : "slide-left"}>
             <div className="p-5 rounded-lg mb-5" style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}>
-              <p className="display text-xl mb-4" style={{ fontWeight: 600 }}>{getGreeting()}</p>
+              <p className="display text-xl mb-4" style={{ fontWeight: 600 }}>{getGreeting(userName)}</p>
 
               {todayEntries.map((entry) => {
                 const validated = isPlanValidatedToday(entry.planItems);
