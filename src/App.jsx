@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Plus, X, Shirt, Layers, Sparkles, Camera, Home, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Cloud, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
 import Cropper from "react-easy-crop";
+import { supabase } from "./supabaseClient";
 
 // ─────────────────────────────────────────────
 // PALETTE — les couleurs de l'appli, centralisées ici
@@ -131,6 +132,8 @@ export default function App() {
   const [cropPosition, setCropPosition] = useState({ x: 0, y: 0 });
   const [cropZoom, setCropZoom] = useState(1);
   const [croppedAreaPixels, setCroppedAreaPixels] = useState(null);
+  // Vrai pendant que les photos sont envoyées vers le stockage en ligne.
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   // À qui la photo recadrée doit être appliquée : null = au formulaire d'ajout,
   // sinon l'id d'un vêtement déjà enregistré (modification depuis sa fiche).
   const [cropTargetItemId, setCropTargetItemId] = useState(null);
@@ -311,21 +314,37 @@ export default function App() {
   }
 
   // Valide le recadrage : découpe l'image et l'enregistre dans le formulaire.
+  // Envoie une image (data URL) vers le stockage Supabase, et renvoie son lien public.
+  // C'est ce lien (une simple ligne de texte) qui est enregistré dans l'appli désormais,
+  // au lieu de l'image entière — ça évite de remplir le stockage limité du téléphone.
+  async function uploadPhotoToStorage(dataUrl, label) {
+    const blob = await (await fetch(dataUrl)).blob();
+    const path = `${label}-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+    const { error } = await supabase.storage.from("photos").upload(path, blob, { contentType: "image/jpeg" });
+    if (error) throw error;
+    const { data } = supabase.storage.from("photos").getPublicUrl(path);
+    return data.publicUrl;
+  }
+
   async function confirmCrop() {
     if (!croppedAreaPixels) return;
+    setUploadingPhoto(true);
     try {
       const croppedDataUrl = await getCroppedImage(rawImageSrc, croppedAreaPixels);
+      const photoUrl = await uploadPhotoToStorage(croppedDataUrl, "photo");
+      const originalUrl = await uploadPhotoToStorage(rawImageSrc, "original");
       if (cropTargetItemId) {
         // On modifie la photo d'un vêtement déjà enregistré, depuis sa fiche.
         // On garde aussi "photoOriginal" (la source utilisée pour ce recadrage), pour pouvoir
         // rouvrir le recadreur plus tard sur l'intégralité de l'image plutôt que sur un carré déjà coupé.
-        setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: croppedDataUrl, photoOriginal: rawImageSrc } : i)));
+        setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: photoUrl, photoOriginal: originalUrl } : i)));
       } else {
-        setForm((prev) => ({ ...prev, photo: croppedDataUrl, photoOriginal: rawImageSrc }));
+        setForm((prev) => ({ ...prev, photo: photoUrl, photoOriginal: originalUrl }));
       }
     } catch (err) {
-      alert("Le recadrage de cette photo a échoué. Essaie avec une autre photo.");
+      alert("L'envoi de cette photo a échoué (vérifie ta connexion internet, ou réessaie dans un instant).");
     }
+    setUploadingPhoto(false);
     setShowCropModal(false);
     setRawImageSrc(null);
     setCropTargetItemId(null);
@@ -2424,10 +2443,11 @@ export default function App() {
 
                   <button
                     onClick={confirmCrop}
+                    disabled={uploadingPhoto}
                     className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm text-white"
-                    style={{ background: COLORS.rose }}
+                    style={{ background: COLORS.rose, opacity: uploadingPhoto ? 0.6 : 1 }}
                   >
-                    Valider le recadrage
+                    {uploadingPhoto ? "Envoi en cours..." : "Valider le recadrage"}
                   </button>
                 </div>
               </div>

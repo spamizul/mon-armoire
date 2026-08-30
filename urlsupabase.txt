@@ -1,0 +1,3 @@
+https://zmscqzctsongskeozbfq.supabase.co/rest/v1/
+
+api key // sb_publishable_gu2lPXbhQiBe_1r1zyIW5w_J9Iaoy0K
