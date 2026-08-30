@@ -235,12 +235,17 @@ export default function App() {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
-      setRawImageSrc(reader.result);
-      setCropPosition({ x: 0, y: 0 });
-      setCropZoom(1);
-      setCropTargetItemId(targetItemId || null);
-      setShowCropModal(true);
+    reader.onload = async () => {
+      try {
+        const resized = await resizeImageDataUrl(reader.result);
+        setRawImageSrc(resized);
+        setCropPosition({ x: 0, y: 0 });
+        setCropZoom(1);
+        setCropTargetItemId(targetItemId || null);
+        setShowCropModal(true);
+      } catch (err) {
+        alert("Cette photo n'a pas pu être ouverte. Essaie avec une autre photo (ou une version JPEG/PNG si c'est un format spécial comme HEIC).");
+      }
     };
     reader.onerror = () => {
       alert("Cette photo n'a pas pu être ouverte. Essaie avec une autre photo (ou une version JPEG/PNG si c'est un format spécial comme HEIC).");
@@ -257,6 +262,21 @@ export default function App() {
       img.onerror = reject;
       img.src = src;
     });
+  }
+
+  // Réduit une photo trop grande (typiquement une photo prise direct avec l'appareil photo
+  // d'un téléphone, souvent plusieurs millions de pixels) AVANT de l'envoyer au recadreur —
+  // sinon ça peut surcharger la mémoire du téléphone et faire planter la page sans message d'erreur.
+  async function resizeImageDataUrl(dataUrl, maxDim = 1600) {
+    const img = await loadImage(dataUrl);
+    const { width, height } = img;
+    if (width <= maxDim && height <= maxDim) return dataUrl; // déjà raisonnable, rien à faire
+    const scale = maxDim / Math.max(width, height);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.85);
   }
 
   // Découpe réellement l'image selon la zone choisie dans le recadreur,
