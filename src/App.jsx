@@ -282,9 +282,11 @@ export default function App() {
       const croppedDataUrl = await getCroppedImage(rawImageSrc, croppedAreaPixels);
       if (cropTargetItemId) {
         // On modifie la photo d'un vêtement déjà enregistré, depuis sa fiche.
-        setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: croppedDataUrl } : i)));
+        // On garde aussi "photoOriginal" (la source utilisée pour ce recadrage), pour pouvoir
+        // rouvrir le recadreur plus tard sur l'intégralité de l'image plutôt que sur un carré déjà coupé.
+        setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: croppedDataUrl, photoOriginal: rawImageSrc } : i)));
       } else {
-        setForm((prev) => ({ ...prev, photo: croppedDataUrl }));
+        setForm((prev) => ({ ...prev, photo: croppedDataUrl, photoOriginal: rawImageSrc }));
       }
     } catch (err) {
       alert("Le recadrage de cette photo a échoué. Essaie avec une autre photo.");
@@ -1342,8 +1344,10 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       // On repart de la photo déjà enregistrée (pas d'un nouveau fichier),
-                      // juste pour ajuster son cadrage.
-                      setRawImageSrc(detailItem.photo);
+                      // juste pour ajuster son cadrage. On repart de "photoOriginal" (la
+                      // photo complète d'avant tout recadrage) si elle existe, plutôt que
+                      // du résultat déjà découpé — pour retrouver toute l'image.
+                      setRawImageSrc(detailItem.photoOriginal || detailItem.photo);
                       setCropPosition({ x: 0, y: 0 });
                       setCropZoom(1);
                       setCropTargetItemId(detailItem.id);
