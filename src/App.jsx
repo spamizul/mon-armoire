@@ -64,30 +64,6 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
 }
 
-const INITIAL_ITEMS = [
-  // Haut
-  { id: 1, name: "Pull col roulé", category: "Haut", hex: "#7C8B6F", seasons: ["Automne", "Hiver"], weather: ["Froid"], occasions: ["Décontracté"], pairsWith: [4, 9], wornDates: [] },
-  { id: 2, name: "T-shirt blanc", category: "Haut", hex: "#EDEDED", seasons: ["Printemps", "Été"], weather: ["Chaud", "Frais"], occasions: ["Décontracté", "Sport"], pairsWith: [5, 10], wornDates: [] },
-  // Chemise
-  { id: 3, name: "Chemise en lin", category: "Chemise", hex: "#E4D9C4", seasons: ["Printemps", "Été"], weather: ["Chaud"], occasions: ["Décontracté"], pairsWith: [5], wornDates: [] },
-  { id: 4, name: "Chemise à carreaux", category: "Chemise", hex: "#8A6E5A", seasons: ["Automne"], weather: ["Frais"], occasions: ["Travail", "Décontracté"], pairsWith: [1, 9], wornDates: [] },
-  // Veste
-  { id: 5, name: "Veste en jean", category: "Veste", hex: "#5B7A9D", seasons: ["Printemps", "Automne"], weather: ["Frais"], occasions: ["Décontracté"], pairsWith: [2, 3], wornDates: [] },
-  { id: 6, name: "Manteau long", category: "Veste", hex: "#3A3A3A", seasons: ["Hiver"], weather: ["Froid", "Pluie"], occasions: ["Travail", "Soirée"], pairsWith: [1], wornDates: [] },
-  // Robe
-  { id: 13, name: "Robe fleurie", category: "Robe", hex: "#D98A8A", seasons: ["Printemps", "Été"], weather: ["Chaud"], occasions: ["Soirée", "Décontracté"], pairsWith: [], wornDates: [] },
-  { id: 14, name: "Robe noire", category: "Robe", hex: "#2B2621", seasons: ["Automne", "Hiver"], weather: ["Frais"], occasions: ["Soirée", "Travail"], pairsWith: [6], wornDates: [] },
-  // Bas
-  { id: 7, name: "Jean droit", category: "Bas", hex: "#4A5A6A", seasons: ["Printemps", "Automne", "Hiver"], weather: ["Frais", "Froid"], occasions: ["Décontracté", "Travail"], pairsWith: [1, 10], wornDates: [] },
-  { id: 8, name: "Jupe plissée", category: "Bas", hex: "#C9A6A1", seasons: ["Printemps", "Été"], weather: ["Chaud"], occasions: ["Travail", "Soirée"], pairsWith: [2], wornDates: [] },
-  // Chaussures
-  { id: 9, name: "Derbies cuir", category: "Chaussures", hex: "#5A3E2B", seasons: ["Automne", "Hiver"], weather: ["Frais", "Froid"], occasions: ["Travail", "Soirée"], pairsWith: [1, 4], wornDates: [] },
-  { id: 10, name: "Baskets blanches", category: "Chaussures", hex: "#FAFAFA", seasons: ["Printemps", "Été"], weather: ["Chaud", "Frais"], occasions: ["Décontracté", "Sport"], pairsWith: [2, 7], wornDates: [] },
-  // Accessoire
-  { id: 11, name: "Écharpe en laine", category: "Accessoire", hex: "#9B4B3E", seasons: ["Hiver"], weather: ["Froid"], occasions: ["Décontracté"], pairsWith: [1, 6], wornDates: [] },
-  { id: 12, name: "Sac en cuir", category: "Accessoire", hex: "#6B4A34", seasons: ["Printemps", "Été", "Automne"], weather: [], occasions: ["Travail", "Soirée"], pairsWith: [], wornDates: [] },
-];
-
 export default function App() {
   // ── ÉTAT (state) ──────────────────────────
   const [items, setItems] = useState([]);
@@ -222,7 +198,7 @@ export default function App() {
   // ── CHARGEMENT / SAUVEGARDE (localStorage) ──
   useEffect(() => {
     const savedItems = localStorage.getItem("mon-armoire-items");
-    setItems(savedItems ? JSON.parse(savedItems) : INITIAL_ITEMS);
+    setItems(savedItems ? JSON.parse(savedItems) : []);
     const savedOutfits = localStorage.getItem("mon-armoire-outfits");
     setOutfits(savedOutfits ? JSON.parse(savedOutfits) : []);
     const savedAgenda = localStorage.getItem("mon-armoire-agenda");
@@ -344,14 +320,6 @@ export default function App() {
     const newItem = { id: Date.now(), ...form, pairsWith: [], wornDates: [] };
     setItems((prev) => [...prev, newItem]);
     setForm({ name: "", category: form.category, hex: "#C4808C", photo: null, seasons: [], weather: [], occasions: [] });
-  }
-
-  // Ajoute les vêtements d'exemple par-dessus ceux déjà là (sans rien effacer).
-  // On donne à chacun un nouvel id unique (basé sur l'heure + sa position dans la liste)
-  // pour être sûr de ne jamais entrer en conflit avec un vêtement existant.
-  function loadDemoItems() {
-    const withFreshIds = INITIAL_ITEMS.map((item, index) => ({ ...item, id: Date.now() + index, pairsWith: [] }));
-    setItems((prev) => [...prev, ...withFreshIds]);
   }
 
   function removeItem(id) {
@@ -1186,14 +1154,6 @@ export default function App() {
               >
                 <Plus size={16} style={{ transform: showAddForm ? "rotate(45deg)" : "none", transition: "transform 0.15s" }} />
                 {showAddForm ? "Fermer" : "Ajouter un vêtement"}
-              </button>
-              <button
-                type="button"
-                onClick={loadDemoItems}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm"
-                style={{ border: `1px solid ${COLORS.line}`, color: COLORS.muted }}
-              >
-                <Sparkles size={14} /> Charger des exemples
               </button>
             </div>
 
