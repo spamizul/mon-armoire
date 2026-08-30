@@ -1,0 +1,534 @@
+import React, { useState, useEffect } from "react";
+import { Plus, X, Shirt, Layers, Sparkles, Camera, Home } from "lucide-react";
+
+// ─────────────────────────────────────────────
+// PALETTE — les couleurs de l'appli, centralisées ici
+// pour être faciles à changer plus tard.
+// ─────────────────────────────────────────────
+const COLORS = {
+  ink: "#2B2621",       // texte principal, presque noir chaud
+  ivory: "#F2ECE3",     // fond général
+  card: "#FFFFFF",
+  rose: "#C4808C",      // accent principal
+  sage: "#8A9A7E",      // accent secondaire
+  gold: "#B8935A",      // accent tertiaire (bordures, hover)
+  line: "#E3DACB",      // lignes fines / séparateurs
+};
+
+const CATEGORIES = ["Haut", "Chemise", "Bas", "Chaussures", "Accessoire"];
+
+// Message d'accueil qui change selon le moment de la journée.
+function getGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Bonjour ! Belle journée en préparation ✨";
+  if (hour < 18) return "Bon après-midi ! On compose une tenue ?";
+  return "Bonsoir ! Un œil sur la tenue de demain ?";
+}
+
+// Quelques vêtements de départ, juste pour que l'écran
+// ne soit pas vide au premier chargement.
+const INITIAL_ITEMS = [
+  { id: 1, name: "Pull col roulé", category: "Haut", hex: "#7C8B6F" },
+  { id: 2, name: "Jean droit", category: "Bas", hex: "#4A5A6A" },
+  { id: 3, name: "Derbies cuir", category: "Chaussures", hex: "#5A3E2B" },
+];
+
+export default function App() {
+  // ── ÉTAT (state) ──────────────────────────
+  // On démarre vide ; le vrai contenu arrive via le chargement au montage (ci-dessous).
+  const [items, setItems] = useState([]);
+  const [activeFilter, setActiveFilter] = useState("Tous");
+  const [form, setForm] = useState({ name: "", category: "Haut", hex: "#C4808C", photo: null });
+
+  // Quel onglet est affiché : l'accueil, le dressing, ou le créateur de tenues.
+  const [view, setView] = useState("accueil");
+
+  // Les tenues déjà enregistrées.
+  // Chaque tenue = { id, name, itemIds: [ids des vêtements qui la composent] }
+  const [outfits, setOutfits] = useState([]);
+
+  // Tant qu'on n'a pas fini de charger les données sauvegardées,
+  // on évite d'écraser le stockage avec un état vide.
+  const [loaded, setLoaded] = useState(false);
+
+  // ── CHARGEMENT AU DÉMARRAGE ─────────────────
+  // localStorage est la mémoire intégrée au navigateur : elle garde des données
+  // même après avoir fermé l'onglet, tant que c'est le même navigateur/appareil.
+  useEffect(() => {
+    const savedItems = localStorage.getItem("mon-armoire-items");
+    setItems(savedItems ? JSON.parse(savedItems) : INITIAL_ITEMS);
+
+    const savedOutfits = localStorage.getItem("mon-armoire-outfits");
+    setOutfits(savedOutfits ? JSON.parse(savedOutfits) : []);
+
+    setLoaded(true); // à partir d'ici, on peut sauvegarder sans risque
+  }, []);
+
+  // ── SAUVEGARDE AUTOMATIQUE ──────────────────
+  // Ces deux useEffect s'exécutent à chaque fois que "items" (ou "outfits")
+  // change, et réécrivent la version sauvegardée. "loaded" évite de sauvegarder
+  // le tableau vide du tout début, avant que le chargement soit fini.
+  useEffect(() => {
+    if (!loaded) return;
+    localStorage.setItem("mon-armoire-items", JSON.stringify(items));
+  }, [items, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    localStorage.setItem("mon-armoire-outfits", JSON.stringify(outfits));
+  }, [outfits, loaded]);
+
+  // Pendant qu'on construit une nouvelle tenue : son nom, et les vêtements
+  // sélectionnés (on stocke juste leurs id).
+  const [outfitName, setOutfitName] = useState("");
+  const [selectedIds, setSelectedIds] = useState([]);
+
+  // ── ACTIONS SUR LES VÊTEMENTS ──────────────
+  // Transforme le fichier photo choisi en une chaîne "data URL" que le
+  // navigateur peut afficher directement dans une balise <img>.
+  function handlePhotoChange(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setForm((prev) => ({ ...prev, photo: reader.result }));
+    reader.readAsDataURL(file);
+  }
+
+  function addItem(e) {
+    e.preventDefault();
+    if (!form.name.trim()) return;
+    const newItem = { id: Date.now(), ...form };
+    setItems((prev) => [...prev, newItem]);
+    setForm({ name: "", category: form.category, hex: "#C4808C", photo: null });
+  }
+
+  function removeItem(id) {
+    setItems((prev) => prev.filter((item) => item.id !== id));
+  }
+
+  const visibleItems =
+    activeFilter === "Tous" ? items : items.filter((i) => i.category === activeFilter);
+
+  // ── ACTIONS SUR LES TENUES ──────────────────
+  // Cliquer sur un vêtement dans le créateur l'ajoute ou l'enlève
+  // de la sélection en cours.
+  function toggleSelected(id) {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
+  }
+
+  function saveOutfit(e) {
+    e.preventDefault();
+    if (!outfitName.trim() || selectedIds.length === 0) return;
+
+    const newOutfit = { id: Date.now(), name: outfitName, itemIds: selectedIds };
+    setOutfits((prev) => [...prev, newOutfit]); // on garde la tenue en mémoire
+    setOutfitName("");
+    setSelectedIds([]); // on vide la sélection pour repartir sur une nouvelle tenue
+  }
+
+  function removeOutfit(id) {
+    setOutfits((prev) => prev.filter((o) => o.id !== id));
+  }
+
+  // Pioche un vêtement au hasard dans une catégorie donnée (ou undefined si vide).
+  function randomFrom(category) {
+    const pool = items.filter((i) => i.category === category);
+    if (pool.length === 0) return undefined;
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+
+  // Compose une tenue au hasard : un haut, un bas, une paire de chaussures,
+  // et un accessoire une fois sur deux (pas systématique, comme dans la vraie vie).
+  function suggestOutfit() {
+    const picks = [randomFrom("Haut"), randomFrom("Bas"), randomFrom("Chaussures")];
+    if (Math.random() > 0.5) picks.push(randomFrom("Chemise"));
+    if (Math.random() > 0.5) picks.push(randomFrom("Accessoire"));
+
+    const found = picks.filter(Boolean);
+    if (found.length < 3) {
+      // Pas assez de pièces dans le dressing pour composer une tenue complète.
+      setSelectedIds(found.map((i) => i.id));
+      setOutfitName("");
+      return;
+    }
+    setSelectedIds(found.map((i) => i.id));
+    setOutfitName("Tenue suggérée");
+  }
+
+  // Retrouve les objets "vêtement" complets à partir d'une liste d'id.
+  // Utile pour afficher une tenue enregistrée.
+  function itemsForOutfit(outfit) {
+    return outfit.itemIds
+      .map((id) => items.find((i) => i.id === id))
+      .filter(Boolean); // au cas où un vêtement aurait été supprimé depuis
+  }
+
+  if (!loaded) {
+    return (
+      <div
+        style={{ background: COLORS.ivory, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}
+      >
+        <p style={{ opacity: 0.5, fontFamily: "Inter, sans-serif", fontSize: 14 }}>Chargement du dressing…</p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: COLORS.ivory, minHeight: "100vh", color: COLORS.ink }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap');
+        * { font-family: 'Inter', sans-serif; box-sizing: border-box; }
+        .display { font-family: 'Fraunces', serif; }
+      `}</style>
+
+      <div className="max-w-3xl mx-auto px-5 py-10">
+        {/* ── EN-TÊTE ── */}
+        <div className="flex items-center gap-3 mb-1">
+          <Shirt size={22} color={COLORS.rose} />
+          <h1 className="display text-3xl" style={{ fontWeight: 600 }}>
+            Mon Armoire
+          </h1>
+        </div>
+        <p className="text-sm mb-6" style={{ color: COLORS.ink, opacity: 0.6 }}>
+          {items.length} vêtement{items.length > 1 ? "s" : ""} · {outfits.length} tenue{outfits.length > 1 ? "s" : ""} enregistrée{outfits.length > 1 ? "s" : ""}
+        </p>
+
+        {/* ── ONGLETS ── */}
+        <div className="flex gap-2 mb-7" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+          <button
+            onClick={() => setView("accueil")}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm"
+            style={{
+              borderBottom: `2px solid ${view === "accueil" ? COLORS.rose : "transparent"}`,
+              fontWeight: view === "accueil" ? 600 : 400,
+              opacity: view === "accueil" ? 1 : 0.6,
+            }}
+          >
+            <Home size={15} /> Accueil
+          </button>
+          <button
+            onClick={() => setView("dressing")}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm"
+            style={{
+              borderBottom: `2px solid ${view === "dressing" ? COLORS.rose : "transparent"}`,
+              fontWeight: view === "dressing" ? 600 : 400,
+              opacity: view === "dressing" ? 1 : 0.6,
+            }}
+          >
+            <Shirt size={15} /> Dressing
+          </button>
+          <button
+            onClick={() => setView("tenues")}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm"
+            style={{
+              borderBottom: `2px solid ${view === "tenues" ? COLORS.rose : "transparent"}`,
+              fontWeight: view === "tenues" ? 600 : 400,
+              opacity: view === "tenues" ? 1 : 0.6,
+            }}
+          >
+            <Layers size={15} /> Tenues
+          </button>
+        </div>
+
+        {/* ══════════════════ VUE ACCUEIL ══════════════════ */}
+        {view === "accueil" && (
+          <div>
+            <div
+              className="p-5 rounded-lg mb-5"
+              style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}
+            >
+              <p className="display text-xl mb-1" style={{ fontWeight: 600 }}>
+                {getGreeting()}
+              </p>
+              <p className="text-sm" style={{ opacity: 0.6 }}>
+                Ton dressing digital t'attend.
+              </p>
+            </div>
+
+            {/* Petites cartes de stats rapides */}
+            <div className="grid grid-cols-2 gap-3 mb-5">
+              <button
+                onClick={() => setView("dressing")}
+                className="p-4 rounded-lg text-left"
+                style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}
+              >
+                <p className="display text-2xl" style={{ fontWeight: 600, color: COLORS.rose }}>
+                  {items.length}
+                </p>
+                <p className="text-xs" style={{ opacity: 0.6 }}>
+                  vêtement{items.length > 1 ? "s" : ""} au dressing
+                </p>
+              </button>
+              <button
+                onClick={() => setView("tenues")}
+                className="p-4 rounded-lg text-left"
+                style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}
+              >
+                <p className="display text-2xl" style={{ fontWeight: 600, color: COLORS.sage }}>
+                  {outfits.length}
+                </p>
+                <p className="text-xs" style={{ opacity: 0.6 }}>
+                  tenue{outfits.length > 1 ? "s" : ""} enregistrée{outfits.length > 1 ? "s" : ""}
+                </p>
+              </button>
+            </div>
+
+            {/* Raccourcis */}
+            <div className="flex gap-2 flex-wrap">
+              <button
+                onClick={() => setView("dressing")}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm text-white"
+                style={{ background: COLORS.rose }}
+              >
+                <Plus size={14} /> Ajouter un vêtement
+              </button>
+              <button
+                onClick={() => setView("tenues")}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm"
+                style={{ border: `1px solid ${COLORS.gold}`, color: COLORS.gold }}
+              >
+                <Sparkles size={14} /> Composer une tenue
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════════ VUE DRESSING ══════════════════ */}
+        {view === "dressing" && (
+          <>
+            <form
+              onSubmit={addItem}
+              className="mb-9 p-4 rounded-lg flex flex-wrap gap-3 items-end"
+              style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}
+            >
+              <div className="flex-1 min-w-[140px]">
+                <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Nom</label>
+                <input
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="Ex : Chemise en lin"
+                  className="w-full px-3 py-2 rounded text-sm"
+                  style={{ border: `1px solid ${COLORS.line}`, outline: "none" }}
+                />
+              </div>
+              <div>
+                <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Catégorie</label>
+                <select
+                  value={form.category}
+                  onChange={(e) => setForm({ ...form, category: e.target.value })}
+                  className="px-3 py-2 rounded text-sm"
+                  style={{ border: `1px solid ${COLORS.line}` }}
+                >
+                  {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Photo</label>
+                <label
+                  className="flex items-center justify-center rounded cursor-pointer overflow-hidden"
+                  style={{ width: 40, height: 36, border: `1px solid ${COLORS.line}`, background: form.photo ? "transparent" : "#FAFAFA" }}
+                >
+                  {form.photo ? (
+                    <img src={form.photo} alt="Aperçu" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ) : (
+                    <Camera size={15} style={{ opacity: 0.4 }} />
+                  )}
+                  <input type="file" accept="image/*" onChange={handlePhotoChange} className="hidden" />
+                </label>
+              </div>
+              <div>
+                <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Couleur</label>
+                <input
+                  type="color"
+                  value={form.hex}
+                  onChange={(e) => setForm({ ...form, hex: e.target.value })}
+                  className="w-10 h-9 rounded cursor-pointer"
+                  style={{ border: `1px solid ${COLORS.line}` }}
+                />
+              </div>
+              <button
+                type="submit"
+                className="flex items-center gap-1 px-4 py-2 rounded text-sm text-white"
+                style={{ background: COLORS.rose }}
+              >
+                <Plus size={16} /> Ajouter
+              </button>
+            </form>
+
+            <div className="flex gap-2 mb-6 flex-wrap">
+              {["Tous", ...CATEGORIES].map((cat) => (
+                <button
+                  key={cat}
+                  onClick={() => setActiveFilter(cat)}
+                  className="px-3 py-1.5 rounded-full text-xs"
+                  style={{
+                    background: activeFilter === cat ? COLORS.ink : "transparent",
+                    color: activeFilter === cat ? COLORS.ivory : COLORS.ink,
+                    border: `1px solid ${activeFilter === cat ? COLORS.ink : COLORS.line}`,
+                  }}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+
+            {visibleItems.length === 0 ? (
+              <p className="text-sm py-10 text-center" style={{ opacity: 0.5 }}>
+                Rien ici pour l'instant — ajoute un vêtement ci-dessus.
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {visibleItems.map((item) => (
+                  <div
+                    key={item.id}
+                    className="rounded-lg overflow-hidden relative group"
+                    style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}
+                  >
+                    {item.photo ? (
+                      <img src={item.photo} alt={item.name} style={{ width: "100%", height: 80, objectFit: "cover" }} />
+                    ) : (
+                      <div style={{ background: item.hex, height: 80 }} />
+                    )}
+                    <div className="p-3">
+                      <p className="text-sm font-medium">{item.name}</p>
+                      <p className="text-xs" style={{ color: COLORS.sage }}>{item.category}</p>
+                    </div>
+                    <button
+                      onClick={() => removeItem(item.id)}
+                      className="absolute top-2 right-2 w-6 h-6 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100"
+                      style={{ background: "rgba(0,0,0,0.5)", color: "white", transition: "opacity 0.15s" }}
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ══════════════════ VUE TENUES ══════════════════ */}
+        {view === "tenues" && (
+          <>
+            {/* ── Créateur de tenue ── */}
+            <form
+              onSubmit={saveOutfit}
+              className="mb-8 p-4 rounded-lg"
+              style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}
+            >
+              <div className="flex items-center gap-2 mb-3">
+                <Sparkles size={16} color={COLORS.gold} />
+                <p className="text-sm font-medium">Créer une tenue</p>
+              </div>
+
+              <p className="text-xs mb-3" style={{ opacity: 0.6 }}>
+                Clique sur les vêtements à combiner, donne un nom à la tenue, puis enregistre-la.
+              </p>
+
+              <button
+                type="button"
+                onClick={suggestOutfit}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs mb-4"
+                style={{ background: COLORS.ivory, border: `1px solid ${COLORS.gold}`, color: COLORS.gold }}
+              >
+                <Sparkles size={13} /> Suggère-moi une tenue
+              </button>
+
+              {/* Grille de sélection : cliquer entoure le vêtement d'un liseré rose */}
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-4">
+                {items.map((item) => {
+                  const isSelected = selectedIds.includes(item.id);
+                  return (
+                    <button
+                      type="button"
+                      key={item.id}
+                      onClick={() => toggleSelected(item.id)}
+                      className="rounded-lg overflow-hidden text-left"
+                      style={{
+                        border: `2px solid ${isSelected ? COLORS.rose : COLORS.line}`,
+                        opacity: isSelected ? 1 : 0.7,
+                      }}
+                    >
+                      <div style={{ background: item.hex, height: 44, overflow: "hidden" }}>
+                        {item.photo && (
+                          <img src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        )}
+                      </div>
+                      <p className="text-[11px] px-1.5 py-1 truncate">{item.name}</p>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex flex-wrap gap-3 items-end">
+                <div className="flex-1 min-w-[140px]">
+                  <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Nom de la tenue</label>
+                  <input
+                    value={outfitName}
+                    onChange={(e) => setOutfitName(e.target.value)}
+                    placeholder="Ex : Look bureau lundi"
+                    className="w-full px-3 py-2 rounded text-sm"
+                    style={{ border: `1px solid ${COLORS.line}`, outline: "none" }}
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={!outfitName.trim() || selectedIds.length === 0}
+                  className="flex items-center gap-1 px-4 py-2 rounded text-sm text-white"
+                  style={{
+                    background: COLORS.sage,
+                    opacity: !outfitName.trim() || selectedIds.length === 0 ? 0.4 : 1,
+                  }}
+                >
+                  <Plus size={16} /> Enregistrer la tenue
+                </button>
+              </div>
+            </form>
+
+            {/* ── Galerie des tenues enregistrées ── */}
+            {outfits.length === 0 ? (
+              <p className="text-sm py-6 text-center" style={{ opacity: 0.5 }}>
+                Aucune tenue enregistrée pour l'instant.
+              </p>
+            ) : (
+              <div className="grid sm:grid-cols-2 gap-3">
+                {outfits.map((outfit) => (
+                  <div
+                    key={outfit.id}
+                    className="rounded-lg p-3 relative"
+                    style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}
+                  >
+                    <button
+                      onClick={() => removeOutfit(outfit.id)}
+                      className="absolute top-2 right-2 w-6 h-6 rounded-full flex items-center justify-center"
+                      style={{ background: "rgba(0,0,0,0.06)" }}
+                    >
+                      <X size={13} />
+                    </button>
+                    <p className="text-sm font-medium mb-2 pr-6">{outfit.name}</p>
+                    <div className="flex gap-1.5">
+                      {itemsForOutfit(outfit).map((item) => (
+                        <div
+                          key={item.id}
+                          title={item.name}
+                          className="rounded overflow-hidden"
+                          style={{ background: item.hex, width: 32, height: 32, border: `1px solid ${COLORS.line}` }}
+                        >
+                          {item.photo && (
+                            <img src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
