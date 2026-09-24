@@ -35,7 +35,9 @@ function isSkirt(item) {
 function effectiveCategory(item) {
   return isSkirt(item) ? "Bas" : item.category;
 }
-const WEATHER_TAGS = ["Chaud", "Frais", "Froid", "Pluie"];
+// Chaud : plus de 25 °C · Doux : 20 à 25 °C · Frais : 14 à 19 °C · Froid : moins de 14 °C
+// (Pas de tag "Pluie" : la pluie est détectée automatiquement et ajoute une veste.)
+const WEATHER_TAGS = ["Chaud", "Doux", "Frais", "Froid"];
 const OCCASIONS = ["Travail", "Décontracté", "Soirée", "Sport"];
 const COLOR_FAMILIES = ["Neutres", "Chauds", "Froids", "Roses/Violets"];
 
@@ -185,7 +187,7 @@ const TAB_ORDER = ["accueil", "dressing", "tenues", "agenda"];
 
 function getGreeting(name) {
   const hour = new Date().getHours();
-  if (hour < 12) return `Bonjour ${name} ✨`;
+  if (hour < 12) return `Bonjour ${name}`;
   if (hour < 18) return `Bon après-midi ${name}`;
   return `Bonsoir ${name}`;
 }
@@ -255,6 +257,30 @@ export default function App() {
       // Glissement vers la droite = onglet précédent
       changeView(TAB_ORDER[currentIndex - 1]);
     }
+  }
+
+  // ── Glisser depuis le bord gauche pour revenir en arrière (comme sur iPhone) ──
+  const edgeSwipe = useRef(null);
+  function handleEdgeTouchStart(e) {
+    const t = e.touches[0];
+    // Seulement si le geste commence tout près du bord gauche de l'écran.
+    edgeSwipe.current = t.clientX < 28 ? { x: t.clientX, y: t.clientY } : null;
+  }
+  function handleEdgeTouchEnd(e) {
+    const start = edgeSwipe.current;
+    edgeSwipe.current = null;
+    if (!start) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - start.x;
+    const dy = Math.abs(t.clientY - start.y);
+    if (dx > 70 && dy < 60) goBack();
+  }
+  // Revient à l'écran précédent de l'onglet en cours (fiche → liste, "Tout voir" → rangées…).
+  function goBack() {
+    if (detailItemId !== null) setDetailItemId(null);
+    else if (categoryView) setCategoryView(null);
+    else if (detailOutfitId !== null) setDetailOutfitId(null);
+    else if (outfitGroupView) setOutfitGroupView(null);
   }
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -882,6 +908,8 @@ export default function App() {
   // Retouche de la tenue générée : null = fermé, un nombre = on remplace la pièce
   // à cette position, "add" = on ajoute une pièce.
   const [wizardSwap, setWizardSwap] = useState(null);
+  // Étape "Une pièce en tête ?" : catégorie ouverte (null = liste des catégories).
+  const [wizardPieceCat, setWizardPieceCat] = useState(null);
   // Si la suggestion est une tenue déjà enregistrée, son id (sinon null).
   const [wizardFromOutfitId, setWizardFromOutfitId] = useState(null);
   // Météo utilisée par le générateur : celle d'aujourd'hui, ou la prévision de demain.
@@ -920,6 +948,7 @@ export default function App() {
   function openWizard(targetDate) {
     setWizardSwap(null);
     setWizardBaseItemId(null); // pas de pièce en tête restée cochée d'une fois sur l'autre
+    setWizardPieceCat(null);
     // Tenue prévue pour demain → on prend la prévision de demain.
     const dayWeather = targetDate && targetDate === tomorrowKey() && weather && weather.tomorrow ? weather.tomorrow : weather;
     setWizardWeather(dayWeather);
@@ -947,8 +976,8 @@ export default function App() {
   }
   function weatherToTag(w) {
     if (!w) return null;
-    if (isRainyDay(w)) return "Pluie";
-    if (w.max >= 22) return "Chaud";
+    if (w.max > 25) return "Chaud";
+    if (w.max >= 20) return "Doux";
     if (w.max >= 14) return "Frais";
     return "Froid";
   }
@@ -1079,14 +1108,14 @@ export default function App() {
       return item;
     }
 
-    // Niveau de température du jour : "Chaud", "Frais", "Froid", ou null si inconnu.
+    // Niveau de température du jour : "Chaud", "Doux", "Frais", "Froid", ou null si inconnu.
     // Par temps de pluie, on se base sur la température réelle si on la connaît.
-    const rainy = currentWeather === "Pluie";
+    const rainy = isRainyDay(wizardWeather);
     let tempLevel = null;
-    if (currentWeather === "Chaud" || currentWeather === "Frais" || currentWeather === "Froid") tempLevel = currentWeather;
-    else if (wizardWeather) tempLevel = wizardWeather.max >= 22 ? "Chaud" : wizardWeather.max >= 14 ? "Frais" : "Froid";
+    if (["Chaud", "Doux", "Frais", "Froid"].includes(currentWeather)) tempLevel = currentWeather;
+    else if (wizardWeather) tempLevel = wizardWeather.max > 25 ? "Chaud" : wizardWeather.max >= 20 ? "Doux" : wizardWeather.max >= 14 ? "Frais" : "Froid";
     // Au-delà de 25 °C, plus de veste ni de chemise par-dessus.
-    const tooHot = wizardWeather ? wizardWeather.max > 25 : false;
+    const tooHot = wizardWeather ? wizardWeather.max > 25 : currentWeather === "Chaud";
     // Gros écart entre le matin et l'après-midi (8 °C ou plus, avec un matin sous 15 °C) :
     // on prévoit une veste à retirer dans la journée, même si l'après-midi est doux.
     const bigSwing = wizardWeather ? wizardWeather.max - wizardWeather.min >= 8 && wizardWeather.min < 15 : false;
@@ -1116,8 +1145,8 @@ export default function App() {
     const forceInclude = (cat) => baseItem && effectiveCategory(baseItem) === cat;
 
     // ── Couche par-dessus le haut (pull OU chemise ouverte), selon la température ──
-    //   Plus de 25 °C : aucune · 22-25 °C : parfois une chemise (pas de pull)
-    //   Frais : une fois sur deux environ · Froid : un pull
+    //   Chaud (+25 °C) : aucune · Doux (20-25 °C) : parfois une chemise (pas de pull)
+    //   Frais (14-19 °C) : une fois sur deux environ · Froid : un pull
     //   Avec une robe : seulement un pull, et seulement s'il fait froid.
     //   Météo inconnue : une fois sur deux, comme avant.
     let layer = null;
@@ -1125,7 +1154,8 @@ export default function App() {
     else if (forceInclude("Chemise")) layer = "Chemise";
     else if (isDress) layer = tempLevel === "Froid" ? "Pull" : null;
     else if (tempLevel === "Froid") layer = "Pull";
-    else if (tempLevel === "Chaud") layer = !tooHot && Math.random() < 0.5 ? "Chemise" : null;
+    else if (tempLevel === "Chaud") layer = null;
+    else if (tempLevel === "Doux") layer = Math.random() < 0.5 ? "Chemise" : null;
     else if (tempLevel === "Frais") layer = Math.random() < 0.6 ? (Math.random() < 0.5 ? "Pull" : "Chemise") : null;
     else if (tempLevel === null) layer = Math.random() < 0.5 ? null : Math.random() < 0.5 ? "Pull" : "Chemise";
     if (layer) {
@@ -1138,9 +1168,9 @@ export default function App() {
 
     // ── Veste : jamais au-delà de 25 °C (sauf pluie), toujours quand il fait froid ou qu'il pleut ──
     let wantJacket;
-    if (forceInclude("Veste") || rainy || bigSwing || tempLevel === "Froid" || tempLevel === "Frais") wantJacket = true; // toujours sous 22 °C, s'il pleut, ou si le matin est frais
+    if (forceInclude("Veste") || rainy || bigSwing || tempLevel === "Froid" || tempLevel === "Frais") wantJacket = true; // toujours sous 20 °C, s'il pleut, ou si le matin est frais
     else if (tooHot) wantJacket = false;
-    else wantJacket = Math.random() < 0.5; // 22-25 °C, ou météo inconnue
+    else wantJacket = Math.random() < 0.5; // doux (20-25 °C), ou météo inconnue
     if (wantJacket) picks.push(pick("Veste", !forceInclude("Veste")));
 
     // ── Accessoire : une fois sur deux, s'il s'accorde aux couleurs ──
@@ -1188,12 +1218,13 @@ export default function App() {
   }
 
   // ── Page Tenues : rangées automatiques selon la météo ──
-  const WEATHER_ROW_TITLES = { Chaud: "Pour le chaud", Frais: "Pour le frais", Froid: "Pour le froid", Pluie: "Pour la pluie" };
+  const WEATHER_ROW_TITLES = { Chaud: "Pour le chaud", Doux: "Pour les jours doux", Frais: "Pour le frais", Froid: "Pour le froid" };
   const outfitsByRecent = [...outfits].sort((a, b) => b.id - a.id);
-  const todayOutfitTag = weatherToTag(weather); // "Frais", "Pluie"… ou null si météo inconnue
+  const todayOutfitTag = weatherToTag(weather); // "Doux", "Frais"… ou null si météo inconnue
   const outfitGroups = [
     ...WEATHER_TAGS.map((w) => ({ key: w, title: WEATHER_ROW_TITLES[w] || w, list: outfitsByRecent.filter((o) => (o.weather || []).includes(w)) })),
-    { key: "sans", title: "Sans météo", list: outfitsByRecent.filter((o) => (o.weather || []).length === 0) },
+    // En dernier, toutes les tenues (y compris celles sans tag météo).
+    { key: "toutes", title: "Toutes mes tenues", list: outfitsByRecent },
   ].filter((g) => g.list.length > 0);
   const todayOutfits = todayOutfitTag ? outfitsByRecent.filter((o) => (o.weather || []).includes(todayOutfitTag)) : [];
 
@@ -1330,12 +1361,16 @@ export default function App() {
 
   // Dégradé de la bannière de la page Aujourd'hui, fabriqué à partir des couleurs des vêtements
   // prévus aujourd'hui. Corail uni si rien n'est encore planifié.
-  function heroGradient() {
+  // "Palette du jour" : les couleurs des vêtements prévus aujourd'hui (5 max, sans doublon).
+  function todayPalette() {
     const todayItems = todayEntries.flatMap((e) => e.planItems).filter(Boolean);
-    const colors = todayItems.map((i) => i.hex).filter(Boolean).slice(0, 3);
-    if (colors.length === 0) return COLORS.rose;
-    if (colors.length === 1) return colors[0];
-    return `linear-gradient(155deg, ${colors.join(", ")})`;
+    return [...new Set(todayItems.map((i) => (i.hex || "").toLowerCase()).filter(Boolean))].slice(0, 5);
+  }
+
+  // Date courte pour l'en-tête : "Jeudi 24 sept."
+  function formatShortToday() {
+    const str = new Date().toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "short" });
+    return str.charAt(0).toUpperCase() + str.slice(1);
   }
 
   function formatTodayHeader() {
@@ -1526,7 +1561,7 @@ export default function App() {
     return (
       <div style={{ background: "#FFFFFF", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <style>{`
-          @import url('https://fonts.googleapis.com/css2?family=Karla:wght@400;500;600;700&family=Merriweather:wght@400;700&display=swap');
+          @import url('https://fonts.googleapis.com/css2?family=Karla:wght@400;500;600;700&family=Merriweather:ital,wght@0,400;0,700;1,400;1,700&display=swap');
           @keyframes splashIn {
             from { opacity: 0; transform: translateY(10px); }
             to   { opacity: 1; transform: translateY(0); }
@@ -1559,7 +1594,7 @@ export default function App() {
   if (!userName) {
     return (
       <div style={{ background: "#FFFFFF", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-        <style>{`@import url('https://fonts.googleapis.com/css2?family=Karla:wght@400;500;600;700&family=Merriweather:wght@400;700&display=swap'); * { font-family: 'Karla', sans-serif; }`}</style>
+        <style>{`@import url('https://fonts.googleapis.com/css2?family=Karla:wght@400;500;600;700&family=Merriweather:ital,wght@0,400;0,700;1,400;1,700&display=swap'); * { font-family: 'Karla', sans-serif; }`}</style>
         <div style={{ width: "100%", maxWidth: 320, textAlign: "center" }}>
           <div style={{ width: 56, height: 56, borderRadius: "50%", background: "#FF4B33", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
             <Shirt size={26} color="#FFFFFF" />
@@ -1589,9 +1624,13 @@ export default function App() {
   }
 
   return (
-    <div style={{ background: COLORS.ivory, minHeight: "100vh", color: COLORS.ink }}>
+    <div
+      style={{ background: COLORS.ivory, minHeight: "100vh", color: COLORS.ink }}
+      onTouchStart={handleEdgeTouchStart}
+      onTouchEnd={handleEdgeTouchEnd}
+    >
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Karla:wght@400;500;600;700&family=Merriweather:wght@400;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Karla:wght@400;500;600;700&family=Merriweather:ital,wght@0,400;0,700;1,400;1,700&display=swap');
         * { font-family: 'Karla', sans-serif; box-sizing: border-box; }
         .display { font-family: 'Merriweather', serif; letter-spacing: 0; }
         @keyframes appIn {
@@ -1621,28 +1660,55 @@ export default function App() {
       >
         {/* ── EN-TÊTE — uniquement sur la page Aujourd'hui ── */}
         {view === "accueil" && (
-          <div className="-mx-5 -mt-10 mb-6" style={{ position: "relative", overflow: "hidden", borderRadius: "0 0 28px 28px", background: heroGradient() }}>
-            <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(0,0,0,0.08) 0%, rgba(0,0,0,0.48) 100%)" }} />
-            <div style={{ position: "relative", padding: "44px 20px 28px 20px" }}>
-              {weatherStatus === "granted" && weather ? (
-                <p className="text-sm" style={{ color: "rgba(255,255,255,0.85)" }}>{formatTodayHeader()} · {weather.temp}°</p>
-              ) : (
-                <p className="text-sm" style={{ color: "rgba(255,255,255,0.85)" }}>{formatTodayHeader()}</p>
-              )}
-              <h1 className="display" style={{ fontWeight: 700, fontSize: 30, color: "#ffffff", marginTop: 6, lineHeight: 1.1 }}>{getGreeting(userName)}</h1>
-              {(weatherStatus === "denied" || weatherStatus === "error") && (
-                <button onClick={requestWeather} className="text-xs mt-2" style={{ color: "#ffffff", textDecoration: "underline" }}>
-                  Activer la météo
-                </button>
-              )}
-            </div>
-          </div>
+          (() => {
+            const palette = todayPalette();
+            const weatherInfo = weatherStatus === "granted" && weather ? getWeatherInfo(weather.code) : null;
+            const WeatherIcon = weatherInfo ? weatherInfo.Icon : Sun;
+            return (
+              <div className="mb-7">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <WeatherIcon size={15} color={COLORS.rose} />
+                    <p className="text-sm truncate" style={{ color: "#666666" }}>
+                      {formatShortToday()}{weatherInfo ? ` · ${weather.temp}°` : ""}
+                    </p>
+                  </div>
+                  {palette.length > 0 && (
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className="text-xs" style={{ color: COLORS.muted }}>Palette du jour</span>
+                      <span className="flex" style={{ paddingLeft: 6 }}>
+                        {palette.map((hex) => (
+                          <span key={hex} style={{ width: 22, height: 22, borderRadius: 11, background: hex, border: "1px solid rgba(0,0,0,0.1)", marginLeft: -6, boxShadow: "0 0 0 2px #FFFFFF" }} />
+                        ))}
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <h1 className="display" style={{ fontStyle: "italic", fontWeight: 700, fontSize: 32, lineHeight: 1.1, marginTop: 8 }}>{getGreeting(userName)}</h1>
+                {/* Fin trait aux couleurs du jour (corail si rien n'est prévu) */}
+                <div
+                  style={{
+                    height: 4,
+                    borderRadius: 2,
+                    marginTop: 12,
+                    background: palette.length > 1 ? `linear-gradient(90deg, ${palette.join(", ")})` : palette[0] || COLORS.rose,
+                  }}
+                />
+                {(weatherStatus === "denied" || weatherStatus === "error") && (
+                  <button onClick={requestWeather} className="text-xs mt-2" style={{ color: COLORS.rose }}>
+                    Activer la météo
+                  </button>
+                )}
+              </div>
+            );
+          })()
         )}
 
         {/* ══════════════════ VUE ACCUEIL ══════════════════ */}
         {view === "accueil" && (
           <div key={view} className={slideDir === "right" ? "slide-right" : "slide-left"}>
-            <div className="mb-6">
+            {/* Carte mise en avant (fond gris clair) : c'est le plus important de la page */}
+            <div className="p-4 rounded-2xl mb-6" style={{ background: COLORS.haze }}>
               <div className="flex items-center justify-between mb-3">
                 <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Pour aujourd'hui</p>
                 <button
@@ -1650,7 +1716,7 @@ export default function App() {
                   onClick={() => openQuickPlan(todayKey())}
                   aria-label={todayEntries.length > 0 ? "Ajouter une autre tenue pour aujourd'hui" : "Planifier une tenue pour aujourd'hui"}
                   className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
-                  style={{ background: COLORS.haze, color: COLORS.ink }}
+                  style={{ background: COLORS.ivory, color: COLORS.ink }}
                 >
                   <Plus size={14} />
                 </button>
@@ -1675,7 +1741,7 @@ export default function App() {
                     </button>
                     <div className="grid grid-cols-3 gap-2">
                       {entry.planItems.map((item) => (
-                        <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
+                        <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.ivory }}>
                           {item.photo ? (
                             <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
                           ) : (
@@ -1710,8 +1776,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => openQuickPlan(tomorrowKey())}
-                className="w-full flex items-center justify-between p-4 rounded-2xl text-left mb-6"
-                style={{ background: COLORS.haze }}
+                className="w-full flex items-center justify-between py-1 text-left mb-6"
               >
                 <div>
                   <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Et demain ?</p>
@@ -1723,7 +1788,7 @@ export default function App() {
                 </span>
               </button>
             ) : (
-              <div className="p-4 rounded-2xl mb-6" style={{ background: COLORS.haze }}>
+              <div className="mb-6">
                 <div className="flex items-center justify-between mb-3">
                   <div>
                     <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Et demain ?</p>
@@ -1734,17 +1799,28 @@ export default function App() {
                     onClick={() => openQuickPlan(tomorrowKey())}
                     aria-label="Ajouter une tenue pour demain"
                     className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
-                    style={{ background: COLORS.ivory, color: COLORS.ink }}
+                    style={{ background: COLORS.haze, color: COLORS.ink }}
                   >
                     <Plus size={14} />
                   </button>
                 </div>
                 {tomorrowEntries.map((entry) => (
                   <div key={entry.entryId} className="mb-3">
-                    <p className="text-xs font-medium mb-2" style={{ color: COLORS.rose }}>{entry.label}</p>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs font-medium" style={{ color: COLORS.rose }}>{entry.label}</p>
+                      <button
+                        type="button"
+                        onClick={() => askConfirm("Supprimer cette tenue prévue ?", () => removeAgendaEntry(entry.dateStr, entry.entryId))}
+                        aria-label="Supprimer cette tenue prévue"
+                        className="w-6 h-6 rounded-full flex items-center justify-center"
+                        style={{ background: "rgba(0,0,0,0.06)" }}
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
                     <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                       {entry.planItems.map((item) => (
-                        <div key={item.id} className="rounded-lg overflow-hidden" style={{ background: COLORS.ivory }}>
+                        <div key={item.id} className="rounded-lg overflow-hidden" style={{ background: COLORS.haze }}>
                           {item.photo ? (
                             <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
                           ) : (
@@ -2310,24 +2386,25 @@ export default function App() {
               </div>
               <button
                 type="button"
-                onClick={() => openWizard()}
-                aria-label="Générer une tenue"
+                onClick={() => { setCreateOutfitStep("select"); setOutfitTags(EMPTY_OUTFIT_TAGS); setOutfitName(nextOutfitName()); setSelectedIds([]); setShowOutfitForm(true); }}
+                aria-label="Créer une tenue"
                 className="w-11 h-11 -mr-2 rounded-full flex items-center justify-center"
-                style={{ color: COLORS.gold }}
+                style={{ color: COLORS.ink }}
               >
-                <Sparkles size={20} />
+                <Plus size={22} />
               </button>
             </div>
             )}
 
+            {/* Bouton principal de la page : générer une tenue */}
             <button
               type="button"
-              onClick={() => { setCreateOutfitStep("select"); setOutfitTags(EMPTY_OUTFIT_TAGS); setOutfitName(nextOutfitName()); setSelectedIds([]); setShowOutfitForm(true); }}
-              aria-label="Créer une tenue"
+              onClick={() => openWizard()}
+              aria-label="Générer une tenue"
               className="flex items-center justify-center rounded-full text-white"
               style={{ position: "fixed", right: 20, bottom: 84, width: 56, height: 56, background: COLORS.rose, boxShadow: "0 6px 18px rgba(255,75,51,0.35)", zIndex: 30 }}
             >
-              <Plus size={24} />
+              <Sparkles size={24} />
             </button>
 
             {showOutfitForm && (
@@ -2498,9 +2575,6 @@ export default function App() {
                         Tout voir
                       </button>
                     </div>
-                    {g.key === "sans" && (
-                      <p className="text-xs -mt-1 mb-2" style={{ color: COLORS.muted }}>Ajoute-leur un tag météo pour qu'elles apparaissent au bon moment</p>
-                    )}
                     <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2.5 overflow-x-auto">
                       {g.list.map((o) => renderOutfitTile(o, 112))}
                     </div>
@@ -3068,48 +3142,83 @@ export default function App() {
                     {step === "piece" && (
                       <div className="mb-4">
                         <p className="text-sm font-medium mb-3">Une pièce en tête ?</p>
-                        {/* Mêmes rangées que la création de tenue ; une seule pièce possible. */}
-                        <div className="flex flex-col gap-4">
-                          {CATEGORIES.map((cat) => {
-                            const catItems = sortItems(items.filter((i) => i.category === cat), "couleur");
-                            if (catItems.length === 0) return null;
-                            return (
-                              <section key={cat}>
-                                <p className="text-xs mb-1.5" style={{ fontWeight: 600 }}>
-                                  {CATEGORY_PLURALS[cat] || cat}{" "}
-                                  <span style={{ fontWeight: 400, color: COLORS.muted }}>· {catItems.length}</span>
-                                </p>
-                                <div data-no-swipe className="no-scrollbar -mx-5 px-5 py-1 flex gap-2 overflow-x-auto">
-                                  {catItems.map((item) => {
-                                    const active = wizardBaseItemId === item.id;
-                                    return (
-                                      <button
-                                        type="button"
-                                        key={item.id}
-                                        onClick={() => setWizardBaseItemId(active ? null : item.id)}
-                                        aria-label={item.name}
-                                        aria-pressed={active}
-                                        className="relative flex-shrink-0 overflow-hidden"
-                                        style={{ width: 72, height: 72, borderRadius: 12, background: COLORS.haze, boxShadow: active ? `0 0 0 2px ${COLORS.rose}` : "none" }}
-                                      >
-                                        {item.photo ? (
-                                          <img src={thumbOf(item)} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                                        ) : (
-                                          <div style={{ background: item.hex, width: "100%", height: "100%" }} />
-                                        )}
-                                        {active && (
-                                          <span className="absolute w-5 h-5 rounded-full flex items-center justify-center" style={{ top: 4, right: 4, background: COLORS.rose }}>
-                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 7" /></svg>
-                                          </span>
-                                        )}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </section>
-                            );
-                          })}
-                        </div>
+                        {/* Pièce choisie : rappel en haut, avec de quoi la retirer */}
+                        {wizardBaseItemId && (() => {
+                          const chosen = items.find((i) => i.id === wizardBaseItemId);
+                          if (!chosen) return null;
+                          return (
+                            <div className="flex items-center gap-3 p-2 pr-3 mb-3 rounded-2xl" style={{ background: "#FDE8E5" }}>
+                              <div className="overflow-hidden flex-shrink-0" style={{ width: 48, height: 48, borderRadius: 10, background: chosen.hex }}>
+                                {chosen.photo && <img src={thumbOf(chosen)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />}
+                              </div>
+                              <p className="flex-1 text-sm truncate" style={{ fontWeight: 600 }}>{chosen.name}</p>
+                              <button type="button" onClick={() => setWizardBaseItemId(null)} aria-label="Retirer la pièce en tête" className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: "#FFFFFF" }}>
+                                <X size={14} />
+                              </button>
+                            </div>
+                          );
+                        })()}
+
+                        {!wizardPieceCat ? (
+                          /* 1. D'abord les catégories, avec un aperçu de leurs couleurs */
+                          <div className="grid grid-cols-2 gap-2">
+                            {CATEGORIES.map((cat) => {
+                              const catItems = sortItems(items.filter((i) => i.category === cat), "couleur");
+                              if (catItems.length === 0) return null;
+                              const dots = [...new Set(catItems.map((i) => (i.hex || "").toLowerCase()).filter(Boolean))].slice(0, 4);
+                              return (
+                                <button
+                                  type="button"
+                                  key={cat}
+                                  onClick={() => setWizardPieceCat(cat)}
+                                  className="flex flex-col items-start gap-2 p-3 rounded-2xl text-left"
+                                  style={{ background: COLORS.haze }}
+                                >
+                                  <span className="flex" style={{ paddingLeft: 5 }}>
+                                    {dots.map((hex) => (
+                                      <span key={hex} style={{ width: 16, height: 16, borderRadius: 8, background: hex, border: "1px solid rgba(0,0,0,0.1)", marginLeft: -5, boxShadow: `0 0 0 2px ${COLORS.haze}` }} />
+                                    ))}
+                                  </span>
+                                  <span className="text-sm" style={{ fontWeight: 600 }}>
+                                    {CATEGORY_PLURALS[cat] || cat} <span style={{ fontWeight: 400, color: COLORS.muted }}>· {catItems.length}</span>
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          /* 2. Puis les pièces de la catégorie choisie seulement */
+                          <div>
+                            <div className="flex items-center gap-1 mb-2">
+                              <button type="button" onClick={() => setWizardPieceCat(null)} aria-label="Retour aux catégories" className="w-9 h-9 -ml-2 rounded-full flex items-center justify-center">
+                                <ArrowLeft size={18} />
+                              </button>
+                              <p className="text-sm" style={{ fontWeight: 600 }}>{CATEGORY_PLURALS[wizardPieceCat] || wizardPieceCat}</p>
+                            </div>
+                            <div className="grid grid-cols-4 gap-2">
+                              {sortItems(items.filter((i) => i.category === wizardPieceCat), "couleur").map((item) => {
+                                const active = wizardBaseItemId === item.id;
+                                return (
+                                  <button
+                                    type="button"
+                                    key={item.id}
+                                    onClick={() => { setWizardBaseItemId(active ? null : item.id); setWizardPieceCat(null); }}
+                                    aria-label={item.name}
+                                    aria-pressed={active}
+                                    className="relative overflow-hidden"
+                                    style={{ aspectRatio: "1 / 1", borderRadius: 12, background: COLORS.haze, boxShadow: active ? `0 0 0 2px ${COLORS.rose}` : "none" }}
+                                  >
+                                    {item.photo ? (
+                                      <img src={thumbOf(item)} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                                    ) : (
+                                      <div style={{ background: item.hex, width: "100%", height: "100%" }} />
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 
