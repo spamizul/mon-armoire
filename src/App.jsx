@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Plus, X, Check, Shirt, Layers, Sparkles, Camera, Home, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Cloud, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
+import { Plus, X, Shirt, Layers, Sparkles, Camera, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Cloud, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
 import Cropper from "react-easy-crop";
 import { supabase } from "./supabaseClient";
 
@@ -19,8 +19,22 @@ const COLORS = {
   haze: "#F3F2EF",      // fond neutre discret (vignettes sans photo, cartes remplies)
 };
 
-const CATEGORIES = ["Haut", "Pull", "Chemise", "Veste", "Robe", "Bas", "Chaussures", "Accessoire"];
-const SEASONS = ["Printemps", "Été", "Automne", "Hiver"];
+// L'ordre ici est l'ordre d'affichage partout dans l'appli (rangées, menus…).
+// "Robe" s'affiche "Robe et jupe" : le nom interne ne change pas, pour ne rien perdre.
+const CATEGORIES = ["Haut", "Chemise", "Pull", "Bas", "Robe", "Veste", "Chaussures", "Accessoire"];
+const CATEGORY_LABELS = { Robe: "Robe et jupe" };
+function catLabel(c) {
+  return CATEGORY_LABELS[c] || c;
+}
+
+// Une jupe rangée dans "Robe et jupe" se reconnaît à son nom : pour le générateur,
+// elle compte comme un bas (il lui faut un haut), pas comme une robe.
+function isSkirt(item) {
+  return !!item && item.category === "Robe" && /jupe/i.test(item.name || "");
+}
+function effectiveCategory(item) {
+  return isSkirt(item) ? "Bas" : item.category;
+}
 const WEATHER_TAGS = ["Chaud", "Frais", "Froid", "Pluie"];
 const OCCASIONS = ["Travail", "Décontracté", "Soirée", "Sport"];
 const COLOR_FAMILIES = ["Neutres", "Chauds", "Froids", "Roses/Violets"];
@@ -126,11 +140,34 @@ async function detectDominantColor(src) {
   return `#${toHex(best.r)}${toHex(best.g)}${toHex(best.b)}`;
 }
 
-const EMPTY_OUTFIT_TAGS = { seasons: [], weather: [], occasions: [] };
+const EMPTY_OUTFIT_TAGS = { weather: [], occasions: [] };
+
+// Photo à afficher dans les vignettes : la miniature légère si elle existe, sinon la photo normale.
+function thumbOf(item) {
+  return item.photoThumb || item.photo;
+}
+
+// Fabrique une miniature carrée légère (240 px, ~15 Ko) à partir d'une photo,
+// pour que les listes chargent vite. La grande photo reste utilisée sur la fiche.
+async function makeThumbnail(src, size = 240) {
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.crossOrigin = "anonymous";
+    i.onload = () => resolve(i);
+    i.onerror = reject;
+    i.src = src.startsWith("http") ? `${src}${src.includes("?") ? "&" : "?"}thumb=1` : src;
+  });
+  const side = Math.min(img.width, img.height);
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  canvas.getContext("2d").drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+  return canvas.toDataURL("image/jpeg", 0.75);
+}
 
 // Noms au pluriel pour les titres de rangées de la Garde-robe.
 const CATEGORY_PLURALS = {
-  Haut: "Hauts", Pull: "Pulls", Chemise: "Chemises", Veste: "Vestes", Robe: "Robes",
+  Haut: "Hauts", Pull: "Pulls", Chemise: "Chemises", Veste: "Vestes", Robe: "Robes et jupes",
   Bas: "Bas", Chaussures: "Chaussures", Accessoire: "Accessoires",
 };
 
@@ -169,7 +206,7 @@ export default function App() {
   // Prénom de la personne, demandé une seule fois au tout premier lancement.
   const [userName, setUserName] = useState(null);
   const [nameInput, setNameInput] = useState("");
-  // Météo du jour, affichée sur la page Profil. "idle"/"loading"/"granted"/"denied"/"error".
+  // Météo du jour, affichée sur la page Aujourd'hui. "idle"/"loading"/"granted"/"denied"/"error".
   const [weather, setWeather] = useState(null);
   const [weatherStatus, setWeatherStatus] = useState("idle");
   // Garantit que l'écran d'ouverture reste visible au moins un court instant,
@@ -188,6 +225,7 @@ export default function App() {
     setView(newView);
     setDetailItemId(null);
     setCategoryView(null);
+    setOutfitGroupView(null);
   }
 
   // Détection du glissement au doigt (swipe) : on note où le doigt touche l'écran,
@@ -227,7 +265,7 @@ export default function App() {
   // Id du vêtement dont la couleur est en cours de détection (null = aucune).
   const [detectingColors, setDetectingColors] = useState(null);
 
-  const [form, setForm] = useState({ name: "", category: "Haut", hex: "#C4808C", photo: null, seasons: [], weather: [], occasions: [] });
+  const [form, setForm] = useState({ name: "", category: "Haut", hex: "#C4808C", photo: null, weather: [], occasions: [] });
   // Recadrage de photo : la popup s'ouvre juste après avoir choisi un fichier,
   // avant que la photo ne soit vraiment enregistrée dans le formulaire.
   const [showCropModal, setShowCropModal] = useState(false);
@@ -246,32 +284,30 @@ export default function App() {
   const [showOutfitForm, setShowOutfitForm] = useState(false);
   // "select" (choix des vêtements) ou "summary" (récap + nom + enregistrement)
   const [createOutfitStep, setCreateOutfitStep] = useState("select");
-  // Contrôle l'ouverture de la popup "tenue du jour" sur la page Profil.
+  // Contrôle l'ouverture de la popup "tenue du jour" sur la page Aujourd'hui.
   // Identifiant de l'entrée d'agenda actuellement ouverte en popup (null = fermée).
   // On garde l'id plutôt qu'un simple booléen car il peut y avoir plusieurs tenues le même jour.
   const [openEntryId, setOpenEntryId] = useState(null);
   // Contrôle le petit sélecteur "ajouter/échanger" à l'intérieur de la popup tenue du jour.
   const [showModalPicker, setShowModalPicker] = useState(false);
-  const [modalPickerFilter, setModalPickerFilter] = useState("Tous");
 
   const [outfitName, setOutfitName] = useState("");
   // Tags choisis pour la tenue en cours de création (saisons, météo, occasions).
   const [outfitTags, setOutfitTags] = useState(EMPTY_OUTFIT_TAGS);
   const [selectedIds, setSelectedIds] = useState([]);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
-  const [outfitSeasonFilter, setOutfitSeasonFilter] = useState("Tous");
+  // Page Tenues : rangée ouverte en "Tout voir" (null = vue en rangées).
+  const [outfitGroupView, setOutfitGroupView] = useState(null);
   const [outfitWeatherFilter, setOutfitWeatherFilter] = useState("Tous");
   const [outfitOccasionFilter, setOutfitOccasionFilter] = useState("Tous");
   // Filtre catégorie pour le sélecteur de vêtements, séparé pour chaque écran
   // (choisir "Bas" dans Tenues ne doit pas affecter le sélecteur de l'Agenda).
-  const [outfitPickerFilter, setOutfitPickerFilter] = useState("Tous");
-  const [agendaPickerFilter, setAgendaPickerFilter] = useState("Tous");
 
   // Champs du formulaire de planification dans l'agenda.
   const [planDate, setPlanDate] = useState("");
   const [planItemIds, setPlanItemIds] = useState([]);
   const [planLabel, setPlanLabel] = useState(""); // ex: "Soir" — permet plusieurs tenues le même jour
-  // Popup de sélection rapide, ouverte depuis Profil (aujourd'hui/demain) sans quitter la page.
+  // Popup de sélection rapide, ouverte depuis la page Aujourd'hui (aujourd'hui/demain) sans quitter la page.
   const [showQuickPlanModal, setShowQuickPlanModal] = useState(false);
   // "choice" (choisir la méthode) | "existing" (tenue déjà enregistrée) | "create" (sélection manuelle)
   const [quickPlanMode, setQuickPlanMode] = useState("choice");
@@ -308,7 +344,6 @@ export default function App() {
   const [detailOutfitId, setDetailOutfitId] = useState(null);
   // Popup de sélection des vêtements "qui vont bien avec" celui affiché en fiche.
   const [showPairsModal, setShowPairsModal] = useState(false);
-  const [pairsPickerFilter, setPairsPickerFilter] = useState("Tous");
 
   // ── CHARGEMENT / SAUVEGARDE (localStorage) ──
   useEffect(() => {
@@ -354,6 +389,25 @@ export default function App() {
       alert("Le stockage de ton téléphone est plein (souvent à cause de trop de photos). Essaie de retirer une photo ou un vêtement pour libérer de la place.");
     }
   }, [agenda, loaded]);
+
+  // Crée en arrière-plan, une seule fois, les miniatures des vêtements ajoutés avant
+  // cette amélioration. Une photo à la fois, sans bloquer l'appli ; en cas d'échec
+  // (pas de réseau…), on réessaiera au prochain lancement.
+  const thumbsMigrationStarted = useRef(false);
+  useEffect(() => {
+    if (!loaded || thumbsMigrationStarted.current) return;
+    const todo = items.filter((i) => i.photo && !i.photoThumb && i.photo.startsWith("http"));
+    if (todo.length === 0) return;
+    thumbsMigrationStarted.current = true;
+    (async () => {
+      for (const item of todo) {
+        try {
+          const thumbUrl = await uploadPhotoToStorage(await makeThumbnail(item.photo), "thumb");
+          setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, photoThumb: thumbUrl } : i)));
+        } catch (err) {}
+      }
+    })();
+  }, [loaded, items]);
 
   // ── ACTIONS SUR LES VÊTEMENTS ──────────────
   // Au lieu d'enregistrer directement la photo choisie, on ouvre d'abord
@@ -432,7 +486,7 @@ export default function App() {
   async function uploadPhotoToStorage(dataUrl, label) {
     const blob = await (await fetch(dataUrl)).blob();
     const path = `${label}-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
-    const { error } = await supabase.storage.from("photos").upload(path, blob, { contentType: "image/jpeg" });
+    const { error } = await supabase.storage.from("photos").upload(path, blob, { contentType: "image/jpeg", cacheControl: "31536000" });
     if (error) throw error;
     const { data } = supabase.storage.from("photos").getPublicUrl(path);
     return data.publicUrl;
@@ -459,20 +513,22 @@ export default function App() {
         detectedHex = await detectDominantColor(croppedDataUrl);
       } catch (err) {}
       const photoUrl = await uploadPhotoToStorage(croppedDataUrl, "photo");
+      const thumbUrl = await uploadPhotoToStorage(await makeThumbnail(croppedDataUrl), "thumb");
       const originalUrl = await uploadPhotoToStorage(rawImageSrc, "original");
       if (cropTargetItemId) {
         // On modifie la photo d'un vêtement déjà enregistré, depuis sa fiche.
         // On garde aussi "photoOriginal" (la source utilisée pour ce recadrage), pour pouvoir
         // rouvrir le recadreur plus tard sur l'intégralité de l'image plutôt que sur un carré déjà coupé.
         const oldItem = items.find((i) => i.id === cropTargetItemId);
-        setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: photoUrl, photoOriginal: originalUrl, ...(detectedHex && { hex: detectedHex }) } : i)));
+        setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: photoUrl, photoThumb: thumbUrl, photoOriginal: originalUrl, ...(detectedHex && { hex: detectedHex }) } : i)));
         // On retire les anciennes versions du stockage, maintenant qu'elles ne sont plus utilisées.
         if (oldItem) {
           deleteFromStorage(oldItem.photo);
+          deleteFromStorage(oldItem.photoThumb);
           deleteFromStorage(oldItem.photoOriginal);
         }
       } else {
-        setForm((prev) => ({ ...prev, photo: photoUrl, photoOriginal: originalUrl, ...(detectedHex && { hex: detectedHex }) }));
+        setForm((prev) => ({ ...prev, photo: photoUrl, photoThumb: thumbUrl, photoOriginal: originalUrl, ...(detectedHex && { hex: detectedHex }) }));
       }
     } catch (err) {
       alert("L'envoi de cette photo a échoué (vérifie ta connexion internet, ou réessaie dans un instant).");
@@ -506,7 +562,7 @@ export default function App() {
     if (!form.name.trim()) return;
     const newItem = { id: Date.now(), ...form, pairsWith: [], wornDates: [] };
     setItems((prev) => [...prev, newItem]);
-    setForm({ name: "", category: form.category, hex: "#C4808C", photo: null, seasons: [], weather: [], occasions: [] });
+    setForm({ name: "", category: form.category, hex: "#C4808C", photo: null, weather: [], occasions: [] });
   }
 
   function removeItem(id) {
@@ -515,6 +571,7 @@ export default function App() {
     const item = items.find((i) => i.id === id);
     if (item) {
       deleteFromStorage(item.photo);
+      deleteFromStorage(item.photoThumb);
       deleteFromStorage(item.photoOriginal);
     }
     setItems((prev) => prev.filter((item) => item.id !== id));
@@ -585,6 +642,59 @@ export default function App() {
     setDetectingColors(null);
   }
 
+  // Sélecteur de vêtements en rangées par catégorie (comme la Garde-robe), réutilisé
+  // dans les popups : "va bien avec", planification depuis l'Agenda, tenue du jour.
+  //   isSelected(item) → vrai si la pièce est cochée · onPick(item) → au toucher
+  //   exclude(item) → vrai pour masquer une pièce · size → taille des vignettes
+  // Les photos ne se chargent qu'en arrivant à l'écran.
+  function renderItemRows({ isSelected = () => false, onPick, exclude = () => false, size = 76 }) {
+    const groups = CATEGORIES
+      .map((cat) => ({ cat, list: sortItems(items.filter((i) => i.category === cat && !exclude(i)), "couleur") }))
+      .filter((g) => g.list.length > 0);
+    if (groups.length === 0) {
+      return <p className="text-sm py-6 text-center" style={{ color: COLORS.muted }}>Aucune pièce</p>;
+    }
+    return (
+      <div className="flex flex-col gap-4">
+        {groups.map(({ cat, list }) => (
+          <section key={cat}>
+            <p className="text-xs mb-1.5" style={{ fontWeight: 600 }}>
+              {CATEGORY_PLURALS[cat] || cat}{" "}
+              <span style={{ fontWeight: 400, color: COLORS.muted }}>· {list.length}</span>
+            </p>
+            <div data-no-swipe className="no-scrollbar -mx-5 px-5 py-1 flex gap-2 overflow-x-auto">
+              {list.map((item) => {
+                const on = isSelected(item);
+                return (
+                  <button
+                    type="button"
+                    key={item.id}
+                    onClick={() => onPick(item)}
+                    aria-label={item.name}
+                    aria-pressed={on}
+                    className="relative flex-shrink-0 overflow-hidden"
+                    style={{ width: size, height: size, borderRadius: 12, background: COLORS.haze, boxShadow: on ? `0 0 0 2px ${COLORS.rose}` : "none" }}
+                  >
+                    {item.photo ? (
+                      <img src={thumbOf(item)} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                    ) : (
+                      <div style={{ background: item.hex, width: "100%", height: "100%" }} />
+                    )}
+                    {on && (
+                      <span className="absolute w-5 h-5 rounded-full flex items-center justify-center" style={{ top: 4, right: 4, background: COLORS.rose }}>
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 7" /></svg>
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        ))}
+      </div>
+    );
+  }
+
   // Une vignette de vêtement : juste la photo (ou sa couleur s'il n'y en a pas),
   // avec un petit cœur si c'est un favori.
   function renderItemTile(item, sizeStyle) {
@@ -597,7 +707,7 @@ export default function App() {
         style={{ background: "#F3F2EF", ...sizeStyle }}
       >
         {item.photo ? (
-          <img src={item.photo} alt={item.name} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          <img src={thumbOf(item)} alt={item.name} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
         ) : (
           <div style={{ background: item.hex, width: "100%", height: "100%" }} />
         )}
@@ -652,7 +762,6 @@ export default function App() {
   // Les 3 rangées de tags affichées au moment d'enregistrer une tenue.
   function renderOutfitTagPicker() {
     const groups = [
-      { field: "seasons", label: "Saisons", values: SEASONS },
       { field: "weather", label: "Météo", values: WEATHER_TAGS },
       { field: "occasions", label: "Occasions", values: OCCASIONS },
     ];
@@ -715,7 +824,7 @@ export default function App() {
 
   // Marque une tenue comme portée aujourd'hui : on note la date sur la tenue,
   // sur chacun des vêtements qui la composent, ET on crée (ou retrouve) l'entrée
-  // correspondante dans l'agenda du jour, pour qu'elle apparaisse aussi sur la page Profil.
+  // correspondante dans l'agenda du jour, pour qu'elle apparaisse aussi sur la page Aujourd'hui.
   function markOutfitWorn(outfit) {
     if (isWornToday(outfit)) return; // sécurité en plus du bouton désactivé : jamais deux fois le même jour
     const today = new Date().toISOString();
@@ -767,17 +876,29 @@ export default function App() {
   // La "pièce en tête" : si choisie, elle sera systématiquement incluse dans la suggestion,
   // et les autres pièces seront piochées en priorité parmi celles qui "vont bien avec" elle.
   const [wizardBaseItemId, setWizardBaseItemId] = useState(null);
-  const [wizardPickerFilter, setWizardPickerFilter] = useState("Tous");
   // Contrôle l'écran de "composition" puis le résultat affiché dans la popup.
   const [wizardGenerating, setWizardGenerating] = useState(false);
   const [wizardShowResult, setWizardShowResult] = useState(false);
   // Retouche de la tenue générée : null = fermé, un nombre = on remplace la pièce
   // à cette position, "add" = on ajoute une pièce.
   const [wizardSwap, setWizardSwap] = useState(null);
+  // Si la suggestion est une tenue déjà enregistrée, son id (sinon null).
+  const [wizardFromOutfitId, setWizardFromOutfitId] = useState(null);
+  // Météo utilisée par le générateur : celle d'aujourd'hui, ou la prévision de demain.
+  const [wizardWeather, setWizardWeather] = useState(null);
   const [wizardAddFilter, setWizardAddFilter] = useState("Tous");
 
   // Remplace la pièce en position "index" par une autre, ou l'ajoute à la fin.
+  // Dès qu'on retouche une tenue existante, elle devient une nouvelle tenue.
+  function detachFromExistingOutfit() {
+    if (wizardFromOutfitId) {
+      setWizardFromOutfitId(null);
+      setOutfitName(nextOutfitName());
+    }
+  }
+
   function pickWizardItem(itemId) {
+    detachFromExistingOutfit();
     if (wizardSwap === "add") {
       setSelectedIds((prev) => [...prev, itemId]);
     } else {
@@ -787,17 +908,22 @@ export default function App() {
   }
 
   function removeWizardItem(index) {
+    detachFromExistingOutfit();
     setSelectedIds((prev) => prev.filter((_, i) => i !== index));
     setWizardSwap(null);
   }
 
   // Si non-null, le résultat du générateur sera planifié à cette date au lieu
-  // d'être simplement ajouté aux tenues (utilisé depuis la popup rapide de Profil).
+  // d'être simplement ajouté aux tenues (utilisé depuis la popup rapide de la page Aujourd'hui).
   const [wizardTargetDate, setWizardTargetDate] = useState(null);
 
   function openWizard(targetDate) {
     setWizardSwap(null);
-    const autoTag = weatherToTag(weather);
+    setWizardBaseItemId(null); // pas de pièce en tête restée cochée d'une fois sur l'autre
+    // Tenue prévue pour demain → on prend la prévision de demain.
+    const dayWeather = targetDate && targetDate === tomorrowKey() && weather && weather.tomorrow ? weather.tomorrow : weather;
+    setWizardWeather(dayWeather);
+    const autoTag = weatherToTag(dayWeather);
     if (autoTag) setCurrentWeather(autoTag);
     setWizardSteps(autoTag
       ? ["piece", "occasion", "couleur", "preference"]
@@ -810,10 +936,18 @@ export default function App() {
 
   // Traduit la météo réelle (Open-Meteo) en tag : pluie d'abord, sinon selon la
   // température maximale de la journée. Renvoie null si la météo n'est pas disponible.
+  function isRainCode(code) {
+    return code != null && ((code >= 51 && code <= 67) || (code >= 80 && code <= 82) || code >= 95);
+  }
+  // Pluie s'il pleut maintenant, OU si la pluie est prévue dans la journée
+  // (temps dominant pluvieux, ou au moins 50 % de risque).
+  function isRainyDay(w) {
+    if (!w) return false;
+    return isRainCode(w.code) || isRainCode(w.dailyCode) || (w.rainChance != null && w.rainChance >= 50);
+  }
   function weatherToTag(w) {
     if (!w) return null;
-    const rainy = (w.code >= 51 && w.code <= 67) || (w.code >= 80 && w.code <= 82) || w.code >= 95;
-    if (rainy) return "Pluie";
+    if (isRainyDay(w)) return "Pluie";
     if (w.max >= 22) return "Chaud";
     if (w.max >= 14) return "Frais";
     return "Froid";
@@ -831,11 +965,13 @@ export default function App() {
   // et de la pièce en tête si une a été choisie.
   // "optional" : pour les pièces facultatives (couche, veste, accessoire). Si aucune
   // ne respecte la palette de couleurs, on préfère ne rien ajouter plutôt que de casser l'harmonie.
-  function randomFrom(category, colorAnchor, optional = false) {
+  // "prefOverride" : impose une préférence pour cette catégorie seulement
+  // (sert à glisser une pièce phare dans une tenue "Oser du neuf").
+  function randomFrom(category, colorAnchor, optional = false, prefOverride) {
     const baseItem = wizardBaseItemId ? items.find((i) => i.id === wizardBaseItemId) : null;
-    if (baseItem && baseItem.category === category) return baseItem; // la pièce en tête est toujours incluse
+    if (baseItem && effectiveCategory(baseItem) === category) return baseItem; // la pièce en tête est toujours incluse
 
-    let pool = items.filter((i) => i.category === category);
+    let pool = items.filter((i) => effectiveCategory(i) === category);
     if (pool.length === 0) return undefined;
 
     // Priorité aux pièces liées ("va bien avec") à la pièce en tête, si elle en a dans cette catégorie.
@@ -872,10 +1008,11 @@ export default function App() {
     }
 
     // Préférence : plutôt des habitués, ou plutôt des vêtements délaissés qu'on "ose" ressortir.
-    if (genPreference === "souvent") {
+    const pref = prefOverride !== undefined ? prefOverride : genPreference;
+    if (pref === "souvent") {
       const sorted = [...pool].sort((a, b) => (b.wornDates || []).length - (a.wornDates || []).length);
       pool = sorted.slice(0, Math.max(1, Math.ceil(sorted.length / 2))); // la moitié la plus portée
-    } else if (genPreference === "oser") {
+    } else if (pref === "oser") {
       const sorted = [...pool].sort((a, b) => (a.wornDates || []).length - (b.wornDates || []).length);
       pool = sorted.slice(0, Math.max(1, Math.ceil(sorted.length / 2))); // la moitié la moins portée
     }
@@ -883,15 +1020,58 @@ export default function App() {
     return pool[Math.floor(Math.random() * pool.length)];
   }
 
+  // "Vêtements souvent portés" : cherche parmi tes tenues déjà enregistrées une qui
+  // respecte les critères (pièce en tête, météo, occasion, couleurs), en privilégiant
+  // les plus portées. Renvoie null si aucune ne convient.
+  function pickExistingOutfit(baseItem) {
+    let pool = outfits.filter((o) => {
+      const pieces = itemsForOutfit(o);
+      return pieces.length >= 2 && pieces.length === o.itemIds.length; // tenue complète (aucune pièce supprimée)
+    });
+    // Pas une tenue déjà portée ces 7 derniers jours : on évite de remettre toujours la même.
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    pool = pool.filter((o) => !(o.wornDates || []).some((d) => new Date(d).getTime() > weekAgo));
+    if (baseItem) pool = pool.filter((o) => o.itemIds.includes(baseItem.id));
+    if (currentWeather) pool = pool.filter((o) => (o.weather || []).includes(currentWeather));
+    if (genOccasion) pool = pool.filter((o) => (o.occasions || []).includes(genOccasion));
+    if (genColorFamily) {
+      pool = pool.filter((o) => {
+        const fams = itemsForOutfit(o).map((i) => hexToColorFamily(i.hex));
+        return fams.includes(genColorFamily) && fams.every((f) => f === genColorFamily || f === "Neutres");
+      });
+    }
+    if (pool.length === 0) return null;
+    const sorted = [...pool].sort((a, b) => (b.wornDates || []).length - (a.wornDates || []).length);
+    const top = sorted.slice(0, Math.max(1, Math.ceil(sorted.length / 2))); // la moitié la plus portée
+    return top[Math.floor(Math.random() * top.length)];
+  }
+
   function suggestOutfit() {
     const baseItem = wizardBaseItemId ? items.find((i) => i.id === wizardBaseItemId) : null;
+    setWizardFromOutfitId(null);
+
+    // Habituée : environ 3 fois sur 10, on ressort une de tes tenues existantes (si une convient).
+    // Le reste du temps, on compose une nouvelle tenue avec tes pièces les plus portées.
+    if (genPreference === "souvent" && Math.random() < 0.3) {
+      const existing = pickExistingOutfit(baseItem);
+      if (existing) {
+        setSelectedIds(existing.itemIds);
+        setOutfitName(existing.name);
+        setOutfitTags({ weather: existing.weather || [], occasions: existing.occasions || [] });
+        setWizardFromOutfitId(existing.id);
+        return;
+      }
+    }
 
     // "L'ancre couleur" : la famille de la première pièce COLORÉE choisie (une pièce
     // neutre va avec tout, elle ne fixe donc pas la palette). Les pièces suivantes sont
     // piochées dans cette même famille ou en neutre.
     let colorAnchor = null;
+    // "Oser du neuf" : une seule pièce phare (parmi tes plus portées) pour garder un repère,
+    // tout le reste en pièces peu portées. Pas besoin si tu as déjà choisi une pièce en tête.
+    let starCat = null;
     function pick(category, optional = false) {
-      const item = randomFrom(category, colorAnchor, optional);
+      const item = randomFrom(category, colorAnchor, optional, category === starCat ? "souvent" : undefined);
       if (item && !colorAnchor && !genColorFamily) {
         const fam = hexToColorFamily(item.hex);
         if (fam !== "Neutres") colorAnchor = fam;
@@ -904,13 +1084,16 @@ export default function App() {
     const rainy = currentWeather === "Pluie";
     let tempLevel = null;
     if (currentWeather === "Chaud" || currentWeather === "Frais" || currentWeather === "Froid") tempLevel = currentWeather;
-    else if (weather) tempLevel = weather.max >= 22 ? "Chaud" : weather.max >= 14 ? "Frais" : "Froid";
+    else if (wizardWeather) tempLevel = wizardWeather.max >= 22 ? "Chaud" : wizardWeather.max >= 14 ? "Frais" : "Froid";
     // Au-delà de 25 °C, plus de veste ni de chemise par-dessus.
-    const tooHot = weather ? weather.max > 25 : false;
+    const tooHot = wizardWeather ? wizardWeather.max > 25 : false;
+    // Gros écart entre le matin et l'après-midi (8 °C ou plus, avec un matin sous 15 °C) :
+    // on prévoit une veste à retirer dans la journée, même si l'après-midi est doux.
+    const bigSwing = wizardWeather ? wizardWeather.max - wizardWeather.min >= 8 && wizardWeather.min < 15 : false;
 
     let base;
     let isDress = false;
-    if (baseItem && baseItem.category === "Robe") {
+    if (baseItem && effectiveCategory(baseItem) === "Robe") {
       base = [baseItem];
       isDress = true;
       const fam = hexToColorFamily(baseItem.hex);
@@ -919,14 +1102,18 @@ export default function App() {
       // Une fois sur trois environ, on part sur une robe plutôt que haut + bas séparés
       // (si le dressing en contient au moins une, sinon on retombe sur haut + bas) —
       // sauf si la pièce en tête est justement un haut ou un bas, auquel cas on la respecte.
-      const forceTopBottom = baseItem && (baseItem.category === "Haut" || baseItem.category === "Bas");
-      const tryDress = !forceTopBottom && Math.random() < 0.33 && items.some((i) => i.category === "Robe");
+      const forceTopBottom = baseItem && (effectiveCategory(baseItem) === "Haut" || effectiveCategory(baseItem) === "Bas");
+      const tryDress = !forceTopBottom && Math.random() < 0.33 && items.some((i) => effectiveCategory(i) === "Robe");
       isDress = tryDress;
+      if (genPreference === "oser" && !baseItem) {
+        const slots = tryDress ? ["Robe", "Chaussures"] : ["Haut", "Bas", "Chaussures"];
+        starCat = slots[Math.floor(Math.random() * slots.length)];
+      }
       base = tryDress ? [pick("Robe")] : [pick("Haut"), pick("Bas")];
     }
 
     const picks = [...base, pick("Chaussures")];
-    const forceInclude = (cat) => baseItem && baseItem.category === cat;
+    const forceInclude = (cat) => baseItem && effectiveCategory(baseItem) === cat;
 
     // ── Couche par-dessus le haut (pull OU chemise ouverte), selon la température ──
     //   Plus de 25 °C : aucune · 22-25 °C : parfois une chemise (pas de pull)
@@ -951,7 +1138,7 @@ export default function App() {
 
     // ── Veste : jamais au-delà de 25 °C (sauf pluie), toujours quand il fait froid ou qu'il pleut ──
     let wantJacket;
-    if (forceInclude("Veste") || rainy || tempLevel === "Froid" || tempLevel === "Frais") wantJacket = true; // toujours sous 22 °C
+    if (forceInclude("Veste") || rainy || bigSwing || tempLevel === "Froid" || tempLevel === "Frais") wantJacket = true; // toujours sous 22 °C, s'il pleut, ou si le matin est frais
     else if (tooHot) wantJacket = false;
     else wantJacket = Math.random() < 0.5; // 22-25 °C, ou météo inconnue
     if (wantJacket) picks.push(pick("Veste", !forceInclude("Veste")));
@@ -962,7 +1149,7 @@ export default function App() {
     setSelectedIds(found.map((i) => i.id));
     setOutfitName(found.length >= 2 ? nextOutfitName() : "");
     // On pré-coche les tags de la tenue avec les critères utilisés pour la générer.
-    setOutfitTags({ seasons: [], weather: currentWeather ? [currentWeather] : [], occasions: genOccasion ? [genOccasion] : [] });
+    setOutfitTags({ weather: currentWeather ? [currentWeather] : [], occasions: genOccasion ? [genOccasion] : [] });
   }
 
   // Lance la génération avec les critères choisis, puis ferme la popup et ouvre
@@ -983,7 +1170,11 @@ export default function App() {
   // Enregistre directement la tenue affichée en résultat, puis referme toute la popup.
   function wizardSaveOutfit() {
     if (wizardTargetDate) {
-      planItemsOnDate(wizardTargetDate, selectedIds, outfitName);
+      planItemsOnDate(wizardTargetDate, selectedIds, outfitName, wizardFromOutfitId || undefined);
+    } else if (wizardFromOutfitId) {
+      // Tenue déjà enregistrée : pas de doublon, on ouvre simplement sa fiche.
+      changeView("tenues");
+      setDetailOutfitId(wizardFromOutfitId);
     } else {
       commitOutfit();
     }
@@ -996,9 +1187,59 @@ export default function App() {
     return outfit.itemIds.map((id) => items.find((i) => i.id === id)).filter(Boolean);
   }
 
+  // ── Page Tenues : rangées automatiques selon la météo ──
+  const WEATHER_ROW_TITLES = { Chaud: "Pour le chaud", Frais: "Pour le frais", Froid: "Pour le froid", Pluie: "Pour la pluie" };
+  const outfitsByRecent = [...outfits].sort((a, b) => b.id - a.id);
+  const todayOutfitTag = weatherToTag(weather); // "Frais", "Pluie"… ou null si météo inconnue
+  const outfitGroups = [
+    ...WEATHER_TAGS.map((w) => ({ key: w, title: WEATHER_ROW_TITLES[w] || w, list: outfitsByRecent.filter((o) => (o.weather || []).includes(w)) })),
+    { key: "sans", title: "Sans météo", list: outfitsByRecent.filter((o) => (o.weather || []).length === 0) },
+  ].filter((g) => g.list.length > 0);
+  const todayOutfits = todayOutfitTag ? outfitsByRecent.filter((o) => (o.weather || []).includes(todayOutfitTag)) : [];
+
+  // Vignette d'une tenue : ses pièces en mosaïque 2×2, son nom dessous, un cœur si favorite.
+  function renderOutfitTile(outfit, size) {
+    const pieces = itemsForOutfit(outfit).slice(0, 4);
+    return (
+      <button
+        type="button"
+        key={outfit.id}
+        onClick={() => setDetailOutfitId(outfit.id)}
+        className="flex-shrink-0 text-left"
+        style={{ width: size || "100%" }}
+      >
+        <div
+          className="relative overflow-hidden"
+          style={{
+            width: size || "100%",
+            height: size || "auto",
+            aspectRatio: size ? undefined : "1 / 1",
+            borderRadius: 16,
+            background: COLORS.haze,
+            display: "grid",
+            gridTemplateColumns: pieces.length > 1 ? "1fr 1fr" : "1fr",
+            gridTemplateRows: pieces.length > 2 ? "1fr 1fr" : "1fr",
+            gap: pieces.length > 1 ? 2 : 0,
+          }}
+        >
+          {pieces.map((item) =>
+            item.photo ? (
+              <img key={item.id} src={thumbOf(item)} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", minWidth: 0, minHeight: 0 }} />
+            ) : (
+              <div key={item.id} style={{ background: item.hex, minWidth: 0, minHeight: 0 }} />
+            )
+          )}
+          {outfit.favorite && (
+            <Heart size={15} color={COLORS.rose} fill={COLORS.rose} style={{ position: "absolute", top: 7, right: 7, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.3))" }} />
+          )}
+        </div>
+        <p className="text-sm mt-1.5 truncate" style={{ fontWeight: 600 }}>{outfit.name}</p>
+      </button>
+    );
+  }
+
   const visibleOutfits = outfits
     .filter((o) => !favoritesOnly || o.favorite)
-    .filter((o) => outfitSeasonFilter === "Tous" || (o.seasons || []).includes(outfitSeasonFilter))
     .filter((o) => outfitWeatherFilter === "Tous" || (o.weather || []).includes(outfitWeatherFilter))
     .filter((o) => outfitOccasionFilter === "Tous" || (o.occasions || []).includes(outfitOccasionFilter))
     // Les tenues les plus récentes en premier (l'id est la date de création).
@@ -1028,7 +1269,7 @@ export default function App() {
         try {
           const { latitude, longitude } = pos.coords;
           const res = await fetch(
-            `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min&timezone=auto`
+            `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&timezone=auto`
           );
           const data = await res.json();
           setWeather({
@@ -1036,6 +1277,17 @@ export default function App() {
             min: Math.round(data.daily.temperature_2m_min[0]),
             max: Math.round(data.daily.temperature_2m_max[0]),
             code: data.current.weather_code,
+            // Prévision pour toute la journée : risque de pluie (%) et temps dominant.
+            rainChance: data.daily.precipitation_probability_max ? data.daily.precipitation_probability_max[0] : null,
+            dailyCode: data.daily.weather_code ? data.daily.weather_code[0] : null,
+            // Prévision de demain (même forme, pour la page Aujourd'hui et le générateur).
+            tomorrow: data.daily.temperature_2m_max.length > 1 ? {
+              min: Math.round(data.daily.temperature_2m_min[1]),
+              max: Math.round(data.daily.temperature_2m_max[1]),
+              code: data.daily.weather_code ? data.daily.weather_code[1] : null,
+              dailyCode: data.daily.weather_code ? data.daily.weather_code[1] : null,
+              rainChance: data.daily.precipitation_probability_max ? data.daily.precipitation_probability_max[1] : null,
+            } : null,
           });
           setWeatherStatus("granted");
         } catch {
@@ -1047,8 +1299,22 @@ export default function App() {
     );
   }
 
-  // Formate la date du jour pour l'en-tête de la page Profil (ex: "samedi 29 août").
+  // Formate la date du jour pour l'en-tête de la page Aujourd'hui (ex: "samedi 29 août").
   // Traduit un code météo (norme WMO, utilisée par Open-Meteo) en texte lisible + icône.
+  // Petite ligne météo pour "Et demain ?" : icône, temps, min/max et risque de pluie.
+  function renderTomorrowForecast() {
+    const t = weather && weather.tomorrow;
+    if (!t) return null;
+    const { label, Icon } = getWeatherInfo(t.code);
+    return (
+      <p className="text-xs mt-0.5 flex items-center gap-1" style={{ color: COLORS.ink, opacity: 0.75 }}>
+        <Icon size={13} color={COLORS.rose} />
+        {label ? `${label} · ` : ""}{t.min}° / {t.max}°
+        {t.rainChance != null && t.rainChance >= 30 ? ` · pluie ${t.rainChance} %` : ""}
+      </p>
+    );
+  }
+
   function getWeatherInfo(code) {
     if (code === 0) return { label: "Ciel dégagé", Icon: Sun };
     if (code <= 2) return { label: "Partiellement nuageux", Icon: Cloud };
@@ -1062,7 +1328,7 @@ export default function App() {
     return { label: "", Icon: Cloud };
   }
 
-  // Dégradé de la bannière Profil, fabriqué à partir des couleurs des vêtements
+  // Dégradé de la bannière de la page Aujourd'hui, fabriqué à partir des couleurs des vêtements
   // prévus aujourd'hui. Corail uni si rien n'est encore planifié.
   function heroGradient() {
     const todayItems = todayEntries.flatMap((e) => e.planItems).filter(Boolean);
@@ -1081,7 +1347,7 @@ export default function App() {
     return new Date().toISOString().slice(0, 10);
   }
 
-  // Même principe, mais pour demain — utile pour le petit aperçu sur la page Profil.
+  // Même principe, mais pour demain — utile pour le petit aperçu sur la page Aujourd'hui.
   function tomorrowKey() {
     const d = new Date();
     d.setDate(d.getDate() + 1);
@@ -1115,7 +1381,7 @@ export default function App() {
   function saveAsReusableOutfit(itemIds, label, dateStr, entryId) {
     if (itemIds.length === 0) return;
     const newOutfitId = Date.now() + 1;
-    const newOutfit = { id: newOutfitId, name: label.trim() || nextOutfitName(), itemIds, favorite: false, wornDates: [], seasons: [], weather: [], occasions: [] };
+    const newOutfit = { id: newOutfitId, name: label.trim() || nextOutfitName(), itemIds, favorite: false, wornDates: [], weather: [], occasions: [] };
     setOutfits((prev) => [...prev, newOutfit]);
 
     if (dateStr && entryId) {
@@ -1353,7 +1619,7 @@ export default function App() {
         className="max-w-3xl mx-auto px-5 pt-10 app-content"
         style={{ paddingBottom: 100 }}
       >
-        {/* ── EN-TÊTE — uniquement sur la page Profil ── */}
+        {/* ── EN-TÊTE — uniquement sur la page Aujourd'hui ── */}
         {view === "accueil" && (
           <div className="-mx-5 -mt-10 mb-6" style={{ position: "relative", overflow: "hidden", borderRadius: "0 0 28px 28px", background: heroGradient() }}>
             <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(0,0,0,0.08) 0%, rgba(0,0,0,0.48) 100%)" }} />
@@ -1411,7 +1677,7 @@ export default function App() {
                       {entry.planItems.map((item) => (
                         <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
                           {item.photo ? (
-                            <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                            <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
                           ) : (
                             <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
                           )}
@@ -1449,6 +1715,7 @@ export default function App() {
               >
                 <div>
                   <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Et demain ?</p>
+                  {renderTomorrowForecast()}
                   <p className="text-xs mt-0.5" style={{ color: COLORS.muted }}>Rien de prévu</p>
                 </div>
                 <span className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.ink }}>
@@ -1458,7 +1725,10 @@ export default function App() {
             ) : (
               <div className="p-4 rounded-2xl mb-6" style={{ background: COLORS.haze }}>
                 <div className="flex items-center justify-between mb-3">
-                  <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Et demain ?</p>
+                  <div>
+                    <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Et demain ?</p>
+                    {renderTomorrowForecast()}
+                  </div>
                   <button
                     type="button"
                     onClick={() => openQuickPlan(tomorrowKey())}
@@ -1476,7 +1746,7 @@ export default function App() {
                       {entry.planItems.map((item) => (
                         <div key={item.id} className="rounded-lg overflow-hidden" style={{ background: COLORS.ivory }}>
                           {item.photo ? (
-                            <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                            <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
                           ) : (
                             <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
                           )}
@@ -1513,11 +1783,11 @@ export default function App() {
                       {entry.planItems.map((item) => (
                         <div key={item.id} className="flex items-center gap-3 p-2 rounded-lg" style={{ background: COLORS.ivory }}>
                           <div className="rounded overflow-hidden" style={{ background: item.hex, width: 40, height: 40, border: `1px solid ${COLORS.line}` }}>
-                            {item.photo && <img src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                            {item.photo && <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
                           </div>
                           <div className="flex-1">
                             <p className="text-sm font-medium">{item.name}</p>
-                            <p className="text-xs" style={{ color: COLORS.muted }}>{item.category}</p>
+                            <p className="text-xs" style={{ color: COLORS.muted }}>{catLabel(item.category)}</p>
                           </div>
                           <button onClick={() => removeItemFromEntry(entry.dateStr, entry.entryId, item.id)} className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
                             <X size={13} />
@@ -1539,33 +1809,11 @@ export default function App() {
 
                     {showModalPicker && (
                       <div className="mb-4">
-                        <select
-                          value={modalPickerFilter}
-                          onChange={(e) => setModalPickerFilter(e.target.value)}
-                          className="px-3 py-1.5 rounded-full text-xs mb-2"
-                          style={{ border: `1px solid ${COLORS.line}`, background: COLORS.card }}
-                        >
-                          <option value="Tous">Toutes catégories</option>
-                          {CATEGORIES.map((cat) => <option key={cat} value={cat}>{cat}</option>)}
-                        </select>
-                        <div className="grid grid-cols-4 gap-2">
-                          {items
-                            .filter((item) => !entry.planItems.some((p) => p.id === item.id)) // déjà dans la tenue → pas la peine de le reproposer
-                            .filter((item) => modalPickerFilter === "Tous" || item.category === modalPickerFilter)
-                            .map((item) => (
-                              <button
-                                type="button"
-                                key={item.id}
-                                onClick={() => addItemToEntry(entry.dateStr, entry.entryId, item.id)}
-                                className="rounded-lg overflow-hidden text-left"
-                                style={{ border: `1px solid ${COLORS.line}` }}
-                              >
-                                <div style={{ background: item.hex, aspectRatio: "1 / 1", overflow: "hidden" }}>
-                                  {item.photo && <img src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
-                                </div>
-                              </button>
-                            ))}
-                        </div>
+                        {renderItemRows({
+                          exclude: (item) => entry.planItems.some((p) => p.id === item.id), // déjà dans la tenue → pas la peine de le reproposer
+                          onPick: (item) => addItemToEntry(entry.dateStr, entry.entryId, item.id),
+                          size: 68,
+                        })}
                       </div>
                     )}
 
@@ -1673,7 +1921,7 @@ export default function App() {
                     </div>
                     <div>
                       <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className="px-3 py-2 rounded text-sm" style={{ border: `1px solid ${COLORS.line}` }}>
-                        {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                        {CATEGORIES.map((c) => <option key={c} value={c}>{catLabel(c)}</option>)}
                       </select>
                     </div>
                     <div>
@@ -1887,7 +2135,7 @@ export default function App() {
                         border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
                       }}
                     >
-                      {c}
+                      {catLabel(c)}
                     </button>
                   );
                 })}
@@ -1965,7 +2213,7 @@ export default function App() {
                   <p className="text-xs font-medium" style={{ opacity: 0.6 }}>Va bien avec</p>
                 </div>
                 <button
-                  onClick={() => { setPairsPickerFilter("Tous"); setShowPairsModal(true); }}
+                  onClick={() => setShowPairsModal(true)}
                   className="text-xs px-2.5 py-1 rounded-full"
                   style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}
                 >
@@ -1983,7 +2231,7 @@ export default function App() {
                     return (
                       <div key={other.id} className="rounded-lg overflow-hidden" style={{ border: `1px solid ${COLORS.line}` }}>
                         <div style={{ background: other.hex, aspectRatio: "1 / 1", overflow: "hidden" }}>
-                          {other.photo && <img src={other.photo} alt={other.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                          {other.photo && <img loading="lazy" decoding="async" src={thumbOf(other)} alt={other.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
                         </div>
                       </div>
                     );
@@ -2007,31 +2255,11 @@ export default function App() {
                     </button>
                   </div>
 
-                  <select
-                    value={pairsPickerFilter}
-                    onChange={(e) => setPairsPickerFilter(e.target.value)}
-                    className="px-3 py-1.5 rounded-full text-xs mb-3"
-                    style={{ border: `1px solid ${COLORS.line}`, background: COLORS.card }}
-                  >
-                    <option value="Tous">Toutes catégories</option>
-                    {CATEGORIES.map((cat) => <option key={cat} value={cat}>{cat}</option>)}
-                  </select>
-
-                  <div className="grid grid-cols-3 gap-2">
-                    {items
-                      .filter((i) => i.id !== detailItem.id)
-                      .filter((i) => pairsPickerFilter === "Tous" || i.category === pairsPickerFilter)
-                      .map((other) => {
-                        const linked = (detailItem.pairsWith || []).includes(other.id);
-                        return (
-                          <button key={other.id} onClick={() => togglePair(detailItem.id, other.id)} className="rounded-lg overflow-hidden text-left" style={{ border: `2px solid ${linked ? COLORS.rose : COLORS.line}`, opacity: linked ? 1 : 0.7 }}>
-                            <div style={{ background: other.hex, aspectRatio: "1 / 1", overflow: "hidden" }}>
-                              {other.photo && <img src={other.photo} alt={other.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
-                            </div>
-                          </button>
-                        );
-                      })}
-                  </div>
+                  {renderItemRows({
+                    exclude: (i) => i.id === detailItem.id,
+                    isSelected: (i) => (detailItem.pairsWith || []).includes(i.id),
+                    onPick: (i) => togglePair(detailItem.id, i.id),
+                  })}
                 </div>
               </div>
             )}
@@ -2074,6 +2302,7 @@ export default function App() {
         {/* ══════════════════ VUE TENUES ══════════════════ */}
         {view === "tenues" && (
           <div key={view} className={slideDir === "right" ? "slide-right" : "slide-left"}>
+            {!outfitGroupView && !detailOutfitId && (
             <div className="flex items-end justify-between mb-6">
               <div>
                 <h1 className="display text-3xl" style={{ fontWeight: 700 }}>Tenues</h1>
@@ -2089,10 +2318,11 @@ export default function App() {
                 <Sparkles size={20} />
               </button>
             </div>
+            )}
 
             <button
               type="button"
-              onClick={() => { setCreateOutfitStep("select"); setOutfitTags(EMPTY_OUTFIT_TAGS); setOutfitName(nextOutfitName()); setShowOutfitForm(true); }}
+              onClick={() => { setCreateOutfitStep("select"); setOutfitTags(EMPTY_OUTFIT_TAGS); setOutfitName(nextOutfitName()); setSelectedIds([]); setShowOutfitForm(true); }}
               aria-label="Créer une tenue"
               className="flex items-center justify-center rounded-full text-white"
               style={{ position: "fixed", right: 20, bottom: 84, width: 56, height: 56, background: COLORS.rose, boxShadow: "0 6px 18px rgba(255,75,51,0.35)", zIndex: 30 }}
@@ -2103,53 +2333,92 @@ export default function App() {
             {showOutfitForm && (
               <div
                 onClick={() => setShowOutfitForm(false)}
-                className="fixed inset-0 flex items-center justify-center p-5"
+                className="fixed inset-0 flex items-end justify-center"
                 style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
               >
-                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-lg p-5" style={{ background: "#FFFFFF", maxHeight: "85vh", overflowY: "auto" }}>
-                  <div className="flex items-center justify-between mb-1">
-                    <p className="display text-lg" style={{ fontWeight: 600 }}>Créer une tenue</p>
-                    <button onClick={() => setShowOutfitForm(false)} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
+                {/* Panneau qui monte du bas de l'écran */}
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-2" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
+                  <div className="flex justify-center mb-2">
+                    <span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} />
+                  </div>
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Créer une tenue</p>
+                    <button type="button" onClick={() => setShowOutfitForm(false)} aria-label="Fermer" className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
                       <X size={14} />
                     </button>
                   </div>
                   <form onSubmit={saveOutfit}>
                     {createOutfitStep === "select" && (
                       <>
-
-                        <select
-                          value={outfitPickerFilter}
-                          onChange={(e) => setOutfitPickerFilter(e.target.value)}
-                          className="px-3 py-1.5 rounded-full text-xs mb-2"
-                          style={{ border: `1px solid ${COLORS.line}`, background: COLORS.card }}
-                        >
-                          <option value="Tous">Toutes catégories</option>
-                          {CATEGORIES.map((cat) => <option key={cat} value={cat}>{cat}</option>)}
-                        </select>
-                        <div className="grid grid-cols-3 gap-2 mb-4">
-                          {items
-                            .filter((item) => outfitPickerFilter === "Tous" || item.category === outfitPickerFilter)
-                            .map((item) => {
-                            const isSelected = selectedIds.includes(item.id);
+                        {/* Une rangée par catégorie, qui défile sur le côté, comme la Garde-robe.
+                            Les photos ne se chargent qu'en arrivant à l'écran (loading="lazy"). */}
+                        <div className="flex flex-col gap-5 pb-4">
+                          {CATEGORIES.map((cat) => {
+                            const catItems = sortItems(items.filter((i) => i.category === cat), "couleur");
+                            if (catItems.length === 0) return null;
                             return (
-                              <button type="button" key={item.id} onClick={() => toggleSelected(item.id)} className="rounded-lg overflow-hidden text-left" style={{ border: `2px solid ${isSelected ? COLORS.rose : COLORS.line}`, opacity: isSelected ? 1 : 0.7 }}>
-                                <div style={{ background: item.hex, aspectRatio: "1 / 1", overflow: "hidden" }}>
-                                  {item.photo && <img src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                              <section key={cat}>
+                                <p className="text-sm mb-2" style={{ fontWeight: 600 }}>
+                                  {CATEGORY_PLURALS[cat] || cat}{" "}
+                                  <span style={{ fontWeight: 400, color: COLORS.muted }}>· {catItems.length}</span>
+                                </p>
+                                <div data-no-swipe className="no-scrollbar -mx-5 px-5 py-1 flex gap-2 overflow-x-auto">
+                                  {catItems.map((item) => {
+                                    const isSelected = selectedIds.includes(item.id);
+                                    return (
+                                      <button
+                                        type="button"
+                                        key={item.id}
+                                        onClick={() => toggleSelected(item.id)}
+                                        aria-label={item.name}
+                                        aria-pressed={isSelected}
+                                        className="relative flex-shrink-0 overflow-hidden"
+                                        style={{ width: 84, height: 84, borderRadius: 14, background: COLORS.haze, boxShadow: isSelected ? `0 0 0 2px ${COLORS.rose}` : "none" }}
+                                      >
+                                        {item.photo ? (
+                                          <img src={thumbOf(item)} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                                        ) : (
+                                          <div style={{ background: item.hex, width: "100%", height: "100%" }} />
+                                        )}
+                                        {isSelected && (
+                                          <span className="absolute w-5 h-5 rounded-full flex items-center justify-center" style={{ top: 5, right: 5, background: COLORS.rose }}>
+                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 7" /></svg>
+                                          </span>
+                                        )}
+                                      </button>
+                                    );
+                                  })}
                                 </div>
-                              </button>
+                              </section>
                             );
                           })}
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => setCreateOutfitStep("summary")}
-                          disabled={selectedIds.length === 0}
-                          className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm text-white"
-                          style={{ background: COLORS.rose, opacity: selectedIds.length === 0 ? 0.4 : 1 }}
-                        >
-                          Suivant
-                        </button>
+                        {/* Bandeau collé en bas : aperçu de la sélection + Suivant */}
+                        <div className="-mx-5 px-5 pt-3 pb-6 flex items-center gap-3" style={{ position: "sticky", bottom: 0, background: "#FFFFFF", borderTop: `1px solid ${COLORS.line}` }}>
+                          {selectedIds.length > 0 && (
+                            <div className="flex flex-shrink-0" style={{ paddingLeft: 8 }}>
+                              {selectedIds.slice(0, 4).map((id) => {
+                                const item = items.find((i) => i.id === id);
+                                if (!item) return null;
+                                return (
+                                  <div key={id} className="overflow-hidden" style={{ width: 40, height: 40, borderRadius: 10, marginLeft: -8, boxShadow: "0 0 0 2px #FFFFFF", background: item.hex }}>
+                                    {item.photo && <img loading="lazy" decoding="async" src={thumbOf(item)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setCreateOutfitStep("summary")}
+                            disabled={selectedIds.length === 0}
+                            className="flex-1 rounded-full text-white"
+                            style={{ height: 48, background: COLORS.rose, opacity: selectedIds.length === 0 ? 0.4 : 1, fontWeight: 600 }}
+                          >
+                            {selectedIds.length === 0 ? "Choisis tes pièces" : `Suivant · ${selectedIds.length}`}
+                          </button>
+                        </div>
                       </>
                     )}
 
@@ -2171,7 +2440,7 @@ export default function App() {
                             return (
                               <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
                                 {item.photo ? (
-                                  <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                                  <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
                                 ) : (
                                   <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
                                 )}
@@ -2187,6 +2456,7 @@ export default function App() {
                         <button type="submit" disabled={!outfitName.trim() || selectedIds.length === 0} className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm text-white" style={{ background: COLORS.rose, opacity: !outfitName.trim() || selectedIds.length === 0 ? 0.4 : 1 }}>
                           <Plus size={16} /> Enregistrer la tenue
                         </button>
+                        <div className="h-6" />
                       </>
                     )}
                   </form>
@@ -2194,101 +2464,70 @@ export default function App() {
               </div>
             )}
 
-            {!detailOutfitId && (
+            {!detailOutfitId && !outfitGroupView && (
             <>
-            <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2 overflow-x-auto mb-5">
-              <button onClick={() => setFavoritesOnly((v) => !v)} className="flex-shrink-0 flex items-center gap-1.5 px-4 rounded-full text-sm" style={{
-                height: 36,
-                background: favoritesOnly ? COLORS.ink : "transparent",
-                color: favoritesOnly ? "white" : COLORS.ink,
-                border: `1px solid ${favoritesOnly ? COLORS.ink : COLORS.line}`,
-              }}>
-                <Heart size={13} fill={favoritesOnly ? "white" : "none"} /> Favoris
-              </button>
-
-              <select
-                value={outfitSeasonFilter}
-                onChange={(e) => setOutfitSeasonFilter(e.target.value)}
-                className="flex-shrink-0 px-4 rounded-full text-sm"
-                style={{ height: 36, border: `1px solid ${COLORS.line}`, background: "transparent" }}
-              >
-                <option value="Tous">Toutes saisons</option>
-                {SEASONS.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-
-              <select
-                value={outfitWeatherFilter}
-                onChange={(e) => setOutfitWeatherFilter(e.target.value)}
-                className="flex-shrink-0 px-4 rounded-full text-sm"
-                style={{ height: 36, border: `1px solid ${COLORS.line}`, background: "transparent" }}
-              >
-                <option value="Tous">Toute météo</option>
-                {WEATHER_TAGS.map((w) => <option key={w} value={w}>{w}</option>)}
-              </select>
-
-              <select
-                value={outfitOccasionFilter}
-                onChange={(e) => setOutfitOccasionFilter(e.target.value)}
-                className="flex-shrink-0 px-4 rounded-full text-sm"
-                style={{ height: 36, border: `1px solid ${COLORS.line}`, background: "transparent" }}
-              >
-                <option value="Tous">Toutes occasions</option>
-                {OCCASIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-              </select>
-            </div>
-
-            {visibleOutfits.length === 0 ? (
-              <p className="text-sm py-10 text-center" style={{ color: COLORS.muted }}>
-                {favoritesOnly ? "Aucun favori" : "Aucune tenue"}
-              </p>
+            {outfits.length === 0 ? (
+              <p className="text-sm py-10 text-center" style={{ color: COLORS.muted }}>Aucune tenue</p>
             ) : (
-              <div>
-                {visibleOutfits.map((outfit) => (
-                  <div key={outfit.id} onClick={() => setDetailOutfitId(outfit.id)} className="relative mb-7 cursor-pointer">
-                    <div className="flex items-center pr-16 mb-2">
-                      <p className="text-sm font-medium" style={{ color: COLORS.rose }}>{outfit.name}</p>
-                    </div>
-                    <div className="absolute top-0 right-0 flex gap-1">
-                      <button onClick={(e) => { e.stopPropagation(); toggleFavoriteOutfit(outfit.id); }} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
-                        <Heart size={13} color={outfit.favorite ? COLORS.rose : COLORS.ink} fill={outfit.favorite ? COLORS.rose : "none"} />
-                      </button>
-                      <button onClick={(e) => { e.stopPropagation(); askConfirm("Supprimer cette tenue ?", () => removeOutfit(outfit.id)); }} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
-                        <X size={14} />
-                      </button>
-                    </div>
-                    <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-3">
-                      {itemsForOutfit(outfit).map((item) => (
-                        <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
-                          {item.photo ? (
-                            <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
-                          ) : (
-                            <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                    <div className="flex items-center justify-between flex-wrap gap-2">
-                      <p className="text-xs" style={{ color: COLORS.muted }}>
-                        {(outfit.wornDates || []).length === 0 ? "Jamais portée" : `Portée ${(outfit.wornDates || []).length}x · dernière : ${formatDate(outfit.wornDates[outfit.wornDates.length - 1])}`}
-                      </p>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); isWornToday(outfit) ? unmarkOutfitWorn(outfit) : markOutfitWorn(outfit); }}
-                        className="text-xs px-3 py-1.5 rounded-full flex-shrink-0"
-                        style={
-                          isWornToday(outfit)
-                            ? { background: COLORS.rose, color: "white" }
-                            : { border: `1px solid ${COLORS.gold}`, color: COLORS.gold }
-                        }
-                      >
-                        {isWornToday(outfit) ? "Portée aujourd'hui ✓" : "Portée aujourd'hui"}
-                      </button>
-                    </div>
+              <div className="flex flex-col gap-7">
+                {/* ── Parfaites pour aujourd'hui (selon la météo du jour) ── */}
+                {todayOutfitTag && weather && (
+                  <div className="p-4 rounded-2xl" style={{ background: COLORS.haze }}>
+                    <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Parfaites pour aujourd'hui</p>
+                    <p className="text-xs mt-0.5 mb-3" style={{ color: COLORS.muted }}>
+                      {todayOutfitTag} · {weather.min}° / {weather.max}°
+                    </p>
+                    {todayOutfits.length === 0 ? (
+                      <p className="text-sm" style={{ color: COLORS.muted }}>Aucune tenue taguée « {todayOutfitTag} » pour l'instant</p>
+                    ) : (
+                      <div data-no-swipe className="no-scrollbar -mx-4 px-4 py-0.5 flex gap-2.5 overflow-x-auto">
+                        {todayOutfits.map((o) => renderOutfitTile(o, 112))}
+                      </div>
+                    )}
                   </div>
+                )}
+
+                {/* ── Une rangée par météo, qui défile sur le côté ── */}
+                {outfitGroups.map((g) => (
+                  <section key={g.key}>
+                    <div className="flex items-baseline justify-between mb-2">
+                      <h2 className="text-base" style={{ fontWeight: 600 }}>
+                        {g.title} <span style={{ fontWeight: 400, color: COLORS.muted }}>· {g.list.length}</span>
+                      </h2>
+                      <button type="button" onClick={() => setOutfitGroupView(g.key)} className="text-sm py-2" style={{ color: COLORS.rose, fontWeight: 500 }}>
+                        Tout voir
+                      </button>
+                    </div>
+                    {g.key === "sans" && (
+                      <p className="text-xs -mt-1 mb-2" style={{ color: COLORS.muted }}>Ajoute-leur un tag météo pour qu'elles apparaissent au bon moment</p>
+                    )}
+                    <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2.5 overflow-x-auto">
+                      {g.list.map((o) => renderOutfitTile(o, 112))}
+                    </div>
+                  </section>
                 ))}
               </div>
             )}
             </>
             )}
+
+            {/* ── "Tout voir" d'une rangée : grille de 2 colonnes ── */}
+            {!detailOutfitId && outfitGroupView && (() => {
+              const g = outfitGroups.find((x) => x.key === outfitGroupView);
+              if (!g) return null;
+              return (
+                <div>
+                  <button type="button" onClick={() => setOutfitGroupView(null)} aria-label="Retour aux tenues" className="w-11 h-11 -ml-3 mb-1 rounded-full flex items-center justify-center">
+                    <ArrowLeft size={20} />
+                  </button>
+                  <p className="display mb-1" style={{ fontWeight: 700, fontSize: 24 }}>{g.title}</p>
+                  <p className="text-sm mb-5" style={{ color: COLORS.muted }}>{g.list.length} tenue{g.list.length > 1 ? "s" : ""}</p>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-4">
+                    {g.list.map((o) => renderOutfitTile(o))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* ══════════════════ FICHE TENUE (détail d'une tenue enregistrée) ══════════════════ */}
             {detailOutfitId && (() => {
@@ -2314,31 +2553,12 @@ export default function App() {
                     {itemsForOutfit(outfit).map((item) => (
                       <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
                         {item.photo ? (
-                          <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                          <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
                         ) : (
                           <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
                         )}
                       </div>
                     ))}
-                  </div>
-
-                  {/* Saisons */}
-                  <div className="mb-5">
-                    <div className="flex gap-1.5 flex-wrap">
-                      {SEASONS.map((s) => {
-                        const active = (outfit.seasons || []).includes(s);
-                        return (
-                          <button key={s} onClick={() => setOutfits((prev) => prev.map((o) => o.id === outfit.id ? { ...o, seasons: active ? (o.seasons || []).filter((x) => x !== s) : [...(o.seasons || []), s] } : o))}
-                            className="px-2.5 py-1 rounded-full text-xs" style={{
-                              background: active ? COLORS.sage : "transparent",
-                              color: active ? "white" : COLORS.ink,
-                              border: `1px solid ${active ? COLORS.sage : COLORS.line}`,
-                            }}>
-                            {s}
-                          </button>
-                        );
-                      })}
-                    </div>
                   </div>
 
                   {/* Météo */}
@@ -2535,7 +2755,7 @@ export default function App() {
                           >
                             {shown.map((item) => (
                               item.photo ? (
-                                <img key={item.id} src={item.photo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                                <img loading="lazy" decoding="async" key={item.id} src={thumbOf(item)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
                               ) : (
                                 <div key={item.id} style={{ background: item.hex, width: "100%", height: "100%" }} />
                               )
@@ -2596,7 +2816,7 @@ export default function App() {
                               {entry.planItems.map((item) => (
                                 <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
                                   {item.photo ? (
-                                    <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                                    <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
                                   ) : (
                                     <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
                                   )}
@@ -2737,7 +2957,7 @@ export default function App() {
                               {candidates.map((item) => (
                                 <button key={item.id} type="button" onClick={() => pickWizardItem(item.id)} aria-label={item.name} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
                                   {item.photo ? (
-                                    <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                                    <img src={thumbOf(item)} alt={item.name} loading="lazy" decoding="async" style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
                                   ) : (
                                     <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
                                   )}
@@ -2757,6 +2977,16 @@ export default function App() {
 
                     {!wizardGenerating && wizardShowResult && wizardSwap === null && (
                       <div className="mb-4">
+                        {wizardFromOutfitId && (() => {
+                          const o = outfits.find((x) => x.id === wizardFromOutfitId);
+                          const n = o ? (o.wornDates || []).length : 0;
+                          return (
+                            <p className="text-xs mb-3 px-3 py-2 rounded-full inline-flex items-center gap-1.5" style={{ background: "#FDE8E5", color: COLORS.ink }}>
+                              <Heart size={12} color={COLORS.rose} fill={COLORS.rose} />
+                              Une de tes tenues{o ? ` · ${o.name}` : ""}{n > 0 ? ` · portée ${n} fois` : ""}
+                            </p>
+                          );
+                        })()}
                         <div className="grid grid-cols-3 gap-2 mb-4">
                           {selectedIds.map((id, index) => {
                             const item = items.find((i) => i.id === id);
@@ -2771,7 +3001,7 @@ export default function App() {
                                   style={{ background: COLORS.haze }}
                                 >
                                   {item.photo ? (
-                                    <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                                    <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
                                   ) : (
                                     <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
                                   )}
@@ -2799,15 +3029,17 @@ export default function App() {
                           </button>
                         </div>
 
-                        <input
-                          value={outfitName}
-                          onChange={(e) => setOutfitName(e.target.value)}
-                          placeholder="Nom de la tenue"
-                          className="w-full px-3 py-2 rounded text-sm mb-3"
-                          style={{ border: `1px solid ${COLORS.line}`, outline: "none" }}
-                        />
+                        {!wizardFromOutfitId && (
+                          <input
+                            value={outfitName}
+                            onChange={(e) => setOutfitName(e.target.value)}
+                            placeholder="Nom de la tenue"
+                            className="w-full px-3 py-2 rounded text-sm mb-3"
+                            style={{ border: `1px solid ${COLORS.line}`, outline: "none" }}
+                          />
+                        )}
 
-                        {!wizardTargetDate && renderOutfitTagPicker()}
+                        {!wizardTargetDate && !wizardFromOutfitId && renderOutfitTagPicker()}
 
                         <div className="flex gap-2">
                           <button onClick={wizardGenerate} className="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm" style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}>
@@ -2819,7 +3051,7 @@ export default function App() {
                             className="flex-1 px-4 py-2 rounded-full text-sm text-white"
                             style={{ background: COLORS.rose, opacity: (selectedIds.length === 0 || (!wizardTargetDate && !outfitName.trim())) ? 0.4 : 1 }}
                           >
-                            {wizardTargetDate ? `Planifier pour ${wizardTargetDate === todayKey() ? "aujourd'hui" : "demain"}` : "Ajouter à mes tenues"}
+                            {wizardTargetDate ? `Planifier pour ${wizardTargetDate === todayKey() ? "aujourd'hui" : "demain"}` : wizardFromOutfitId ? "Voir la tenue" : "Ajouter à mes tenues"}
                           </button>
                         </div>
                       </div>
@@ -2828,42 +3060,55 @@ export default function App() {
                     {/* ── Questions, une étape à la fois ── */}
                     {!wizardGenerating && !wizardShowResult && (
                       <>
-                    {step === "piece" && !WIZARD_STEPS.includes("meteo") && currentWeather && weather && (
+                    {step === "piece" && !WIZARD_STEPS.includes("meteo") && currentWeather && wizardWeather && (
                       <p className="text-xs mb-3 px-3 py-2 rounded-full inline-flex items-center gap-1.5" style={{ background: "#F3F2EF" }}>
-                        <Sun size={13} /> {currentWeather} · {weather.min}° / {weather.max}°
+                        <Sun size={13} /> {wizardTargetDate === tomorrowKey() ? "Demain · " : ""}{currentWeather} · {wizardWeather.min}° / {wizardWeather.max}°{wizardWeather.rainChance != null && wizardWeather.rainChance >= 30 ? ` · pluie ${wizardWeather.rainChance} %` : ""}
                       </p>
                     )}
                     {step === "piece" && (
                       <div className="mb-4">
                         <p className="text-sm font-medium mb-3">Une pièce en tête ?</p>
-                        <select
-                          value={wizardPickerFilter}
-                          onChange={(e) => setWizardPickerFilter(e.target.value)}
-                          className="px-3 py-1.5 rounded-full text-xs mb-2"
-                          style={{ border: `1px solid ${COLORS.line}`, background: COLORS.card }}
-                        >
-                          <option value="Tous">Toutes catégories</option>
-                          {CATEGORIES.map((cat) => <option key={cat} value={cat}>{cat}</option>)}
-                        </select>
-                        <div className="grid grid-cols-3 gap-2">
-                          {items
-                            .filter((item) => wizardPickerFilter === "Tous" || item.category === wizardPickerFilter)
-                            .map((item) => {
-                              const active = wizardBaseItemId === item.id;
-                              return (
-                                <button
-                                  type="button"
-                                  key={item.id}
-                                  onClick={() => setWizardBaseItemId(active ? null : item.id)}
-                                  className="rounded-lg overflow-hidden text-left"
-                                  style={{ border: `2px solid ${active ? COLORS.rose : COLORS.line}`, opacity: active ? 1 : 0.75 }}
-                                >
-                                  <div style={{ background: item.hex, aspectRatio: "1 / 1", overflow: "hidden" }}>
-                                    {item.photo && <img src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
-                                  </div>
-                                </button>
-                              );
-                            })}
+                        {/* Mêmes rangées que la création de tenue ; une seule pièce possible. */}
+                        <div className="flex flex-col gap-4">
+                          {CATEGORIES.map((cat) => {
+                            const catItems = sortItems(items.filter((i) => i.category === cat), "couleur");
+                            if (catItems.length === 0) return null;
+                            return (
+                              <section key={cat}>
+                                <p className="text-xs mb-1.5" style={{ fontWeight: 600 }}>
+                                  {CATEGORY_PLURALS[cat] || cat}{" "}
+                                  <span style={{ fontWeight: 400, color: COLORS.muted }}>· {catItems.length}</span>
+                                </p>
+                                <div data-no-swipe className="no-scrollbar -mx-5 px-5 py-1 flex gap-2 overflow-x-auto">
+                                  {catItems.map((item) => {
+                                    const active = wizardBaseItemId === item.id;
+                                    return (
+                                      <button
+                                        type="button"
+                                        key={item.id}
+                                        onClick={() => setWizardBaseItemId(active ? null : item.id)}
+                                        aria-label={item.name}
+                                        aria-pressed={active}
+                                        className="relative flex-shrink-0 overflow-hidden"
+                                        style={{ width: 72, height: 72, borderRadius: 12, background: COLORS.haze, boxShadow: active ? `0 0 0 2px ${COLORS.rose}` : "none" }}
+                                      >
+                                        {item.photo ? (
+                                          <img src={thumbOf(item)} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                                        ) : (
+                                          <div style={{ background: item.hex, width: "100%", height: "100%" }} />
+                                        )}
+                                        {active && (
+                                          <span className="absolute w-5 h-5 rounded-full flex items-center justify-center" style={{ top: 4, right: 4, background: COLORS.rose }}>
+                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 7" /></svg>
+                                          </span>
+                                        )}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </section>
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -2911,13 +3156,11 @@ export default function App() {
                     {step === "couleur" && (
                       <div className="mb-4">
                         <p className="text-sm font-medium mb-3">Quelles couleurs ?</p>
-                        <div className="flex flex-col gap-2">
+                        <div className="flex gap-1.5 flex-wrap">
                           {COLOR_FAMILIES.map((c) => {
                             const active = genColorFamily === c;
-                            // Les vêtements de cette famille, et un aperçu de leurs vraies couleurs.
-                            const familyItems = items.filter((i) => hexToColorFamily(i.hex) === c);
-                            const count = familyItems.length;
-                            const swatches = [...new Set([...familyItems].sort(compareByColor).map((i) => (i.hex || "").toLowerCase()))].filter(Boolean).slice(0, 5);
+                            // Nombre de vêtements de cette famille ; famille vide = grisée, non choisissable.
+                            const count = items.filter((i) => hexToColorFamily(i.hex) === c).length;
                             const empty = count === 0;
                             return (
                               <button
@@ -2925,36 +3168,15 @@ export default function App() {
                                 key={c}
                                 disabled={empty}
                                 onClick={() => setGenColorFamily(active ? null : c)}
-                                className="flex items-center justify-between gap-3 px-3.5 py-3 rounded-2xl text-left"
+                                className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm"
                                 style={{
-                                  border: active ? `2px solid ${COLORS.ink}` : empty ? "1px dashed #DDDDDD" : `1px solid ${COLORS.line}`,
-                                  opacity: empty ? 0.5 : 1,
-                                  background: "#FFFFFF",
+                                  background: active ? COLORS.ink : "transparent",
+                                  color: active ? "white" : empty ? "#B5B5B5" : COLORS.ink,
+                                  border: active ? `1px solid ${COLORS.ink}` : empty ? "1px dashed #DDDDDD" : `1px solid ${COLORS.line}`,
                                 }}
                               >
-                                <span className="flex flex-col">
-                                  <span className="text-sm" style={{ fontWeight: 600 }}>{c}</span>
-                                  <span className="text-xs" style={{ color: COLORS.muted }}>{count} pièce{count > 1 ? "s" : ""}</span>
-                                </span>
-                                <span className="flex items-center gap-2.5">
-                                  {empty ? (
-                                    <span className="text-xs" style={{ color: "#B5B5B5" }}>aucune pièce</span>
-                                  ) : (
-                                    <span className="flex" style={{ paddingLeft: 6 }}>
-                                      {swatches.map((hex) => (
-                                        <span
-                                          key={hex}
-                                          style={{ width: 22, height: 22, borderRadius: 6, background: hex, border: "1px solid rgba(0,0,0,0.08)", marginLeft: -6, boxShadow: "0 0 0 2px #FFFFFF" }}
-                                        />
-                                      ))}
-                                    </span>
-                                  )}
-                                  {active && (
-                                    <span className="w-5 h-5 rounded-full flex items-center justify-center" style={{ background: COLORS.ink }}>
-                                      <Check size={12} color="#FFFFFF" strokeWidth={3} />
-                                    </span>
-                                  )}
-                                </span>
+                                {c}
+                                <span className="text-xs" style={{ color: active ? "rgba(255,255,255,0.7)" : empty ? "#B5B5B5" : COLORS.muted }}>· {count}</span>
                               </button>
                             );
                           })}
@@ -3124,15 +3346,6 @@ export default function App() {
                     <div>
                       <div className="flex gap-1.5 flex-wrap mb-3">
                         <select
-                          value={outfitSeasonFilter}
-                          onChange={(e) => setOutfitSeasonFilter(e.target.value)}
-                          className="px-2.5 py-1 rounded-full text-[11px]"
-                          style={{ border: `1px solid ${COLORS.line}`, background: COLORS.card }}
-                        >
-                          <option value="Tous">Toutes saisons</option>
-                          {SEASONS.map((s) => <option key={s} value={s}>{s}</option>)}
-                        </select>
-                        <select
                           value={outfitWeatherFilter}
                           onChange={(e) => setOutfitWeatherFilter(e.target.value)}
                           className="px-2.5 py-1 rounded-full text-[11px]"
@@ -3154,7 +3367,6 @@ export default function App() {
 
                       <div className="space-y-2">
                         {outfits
-                          .filter((o) => outfitSeasonFilter === "Tous" || (o.seasons || []).includes(outfitSeasonFilter))
                           .filter((o) => outfitWeatherFilter === "Tous" || (o.weather || []).includes(outfitWeatherFilter))
                           .filter((o) => outfitOccasionFilter === "Tous" || (o.occasions || []).includes(outfitOccasionFilter))
                           .map((outfit) => (
@@ -3170,7 +3382,7 @@ export default function App() {
                             <div className="flex gap-1">
                               {itemsForOutfit(outfit).slice(0, 3).map((item) => (
                                 <div key={item.id} className="rounded overflow-hidden" style={{ background: item.hex, width: 28, height: 28, border: `1px solid ${COLORS.line}` }}>
-                                  {item.photo && <img src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                                  {item.photo && <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
                                 </div>
                               ))}
                             </div>
@@ -3192,34 +3404,11 @@ export default function App() {
                         style={{ border: `1px solid ${COLORS.line}`, outline: "none" }}
                       />
 
-                      <select
-                        value={agendaPickerFilter}
-                        onChange={(e) => setAgendaPickerFilter(e.target.value)}
-                        className="px-3 py-1.5 rounded-full text-xs mb-2"
-                        style={{ border: `1px solid ${COLORS.line}`, background: COLORS.card }}
-                      >
-                        <option value="Tous">Toutes catégories</option>
-                        {CATEGORIES.map((cat) => <option key={cat} value={cat}>{cat}</option>)}
-                      </select>
-                      <div className="grid grid-cols-3 gap-2 mb-4">
-                        {items
-                          .filter((item) => agendaPickerFilter === "Tous" || item.category === agendaPickerFilter)
-                          .map((item) => {
-                            const isSelected = planItemIds.includes(item.id);
-                            return (
-                              <button
-                                type="button"
-                                key={item.id}
-                                onClick={() => togglePlanItem(item.id)}
-                                className="rounded-lg overflow-hidden text-left"
-                                style={{ border: `2px solid ${isSelected ? COLORS.rose : COLORS.line}`, opacity: isSelected ? 1 : 0.7 }}
-                              >
-                                <div style={{ background: item.hex, aspectRatio: "1 / 1", overflow: "hidden" }}>
-                                  {item.photo && <img src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
-                                </div>
-                              </button>
-                            );
-                          })}
+                      <div className="mb-4">
+                        {renderItemRows({
+                          isSelected: (item) => planItemIds.includes(item.id),
+                          onPick: (item) => togglePlanItem(item.id),
+                        })}
                       </div>
 
                       <label className="flex items-center gap-2 text-xs mb-4" style={{ opacity: 0.7 }}>
@@ -3255,7 +3444,7 @@ export default function App() {
       <div style={{ position: "fixed", bottom: 14, left: 0, right: 0, display: "flex", justifyContent: "center", zIndex: 40 }}>
         <div style={{ display: "flex", background: "#111111", borderRadius: 999, padding: "6px 8px", gap: 4, boxShadow: "0 6px 16px rgba(0,0,0,0.18)" }}>
           {[
-            { key: "accueil", label: "Profil", Icon: Home },
+            { key: "accueil", label: "Aujourd'hui", Icon: Sun },
             { key: "dressing", label: "Garde-robe", Icon: Shirt },
             { key: "tenues", label: "Tenues", Icon: Layers },
             { key: "agenda", label: "Agenda", Icon: Calendar },
@@ -3265,15 +3454,22 @@ export default function App() {
               <button
                 key={key}
                 onClick={() => changeView(key)}
-                className="flex flex-col items-center gap-0.5"
+                aria-label={label}
+                aria-current={active ? "page" : undefined}
+                className="flex items-center justify-center"
                 style={{
-                  padding: "6px 12px",
+                  // Onglet actif : icône + nom dans une pastille corail. Les autres : icône seule.
+                  height: 44,
+                  minWidth: 44,
+                  padding: active ? "0 16px 0 13px" : "0 12px",
+                  gap: 6,
                   borderRadius: 999,
                   background: active ? COLORS.rose : "transparent",
+                  transition: "background 0.2s, padding 0.2s",
                 }}
               >
-                <Icon size={16} color={active ? "white" : "#AAAAAA"} />
-                <span style={{ fontSize: 9, color: active ? "white" : "#AAAAAA" }}>{label}</span>
+                <Icon size={18} color={active ? "white" : "#AAAAAA"} />
+                {active && <span style={{ fontSize: 13, fontWeight: 600, color: "white", whiteSpace: "nowrap" }}>{label}</span>}
               </button>
             );
           })}
