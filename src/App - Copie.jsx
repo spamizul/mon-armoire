@@ -16,10 +16,9 @@ const COLORS = {
   gold: "#FF4B33",
   line: "#EBEBEB",
   muted: "#999999",     // texte secondaire discret (catégories, sous-titres)
-  haze: "#F3F2EF",      // fond neutre discret (vignettes sans photo, cartes remplies)
 };
 
-const CATEGORIES = ["Haut", "Pull", "Chemise", "Veste", "Robe", "Bas", "Chaussures", "Accessoire"];
+const CATEGORIES = ["Haut", "Chemise", "Veste", "Robe", "Bas", "Chaussures", "Accessoire"];
 const SEASONS = ["Printemps", "Été", "Automne", "Hiver"];
 const WEATHER_TAGS = ["Chaud", "Frais", "Froid", "Pluie"];
 const OCCASIONS = ["Travail", "Décontracté", "Soirée", "Sport"];
@@ -50,107 +49,15 @@ function hexToColorFamily(hex) {
   if (h < 260) return "Froids";                   // vert, bleu
   return "Roses/Violets";
 }
-
-// Transforme un code couleur (#RRGGBB) en teinte / saturation / luminosité (HSL).
-// h = position sur l'arc-en-ciel (0 à 360), s = intensité (0 à 1), l = clarté (0 = noir, 1 = blanc).
-function hexToHsl(hex) {
-  if (!hex || hex.length < 7) return { h: 0, s: 0, l: 0.5 };
-  const r = parseInt(hex.slice(1, 3), 16) / 255;
-  const g = parseInt(hex.slice(3, 5), 16) / 255;
-  const b = parseInt(hex.slice(5, 7), 16) / 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  const d = max - min;
-  const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
-  let h = 0;
-  if (d !== 0) {
-    if (max === r) h = ((g - b) / d) % 6;
-    else if (max === g) h = (b - r) / d + 2;
-    else h = (r - g) / d + 4;
-    h *= 60;
-    if (h < 0) h += 360;
-  }
-  return { h, s, l };
-}
-
-// Compare deux vêtements pour les ranger "en dégradé" :
-// 1. les neutres clairs (blanc, crème, gris clair), du plus clair au plus foncé
-// 2. les couleurs, dans l'ordre de l'arc-en-ciel
-// 3. les neutres foncés (gris anthracite, noir), du plus clair au plus foncé
-function compareByColor(a, b) {
-  function key(item) {
-    const { h, s, l } = hexToHsl(item.hex);
-    const neutral = s < 0.15 || l > 0.93 || l < 0.12;
-    if (neutral && l >= 0.5) return [0, -l];
-    if (neutral) return [2, -l];
-    return [1, h];
-  }
-  const A = key(a), B = key(b);
-  return A[0] !== B[0] ? A[0] - B[0] : A[1] - B[1];
-}
-
-// Détecte la couleur principale d'une photo, directement dans le navigateur.
-// On ne regarde que le centre de l'image (là où se trouve le vêtement) pour éviter
-// que le fond (parquet, lit, mur…) ne fausse le résultat. Les pixels sont rangés
-// dans des "paniers" de couleurs proches, et on garde la moyenne du panier le plus rempli.
-async function detectDominantColor(src) {
-  const img = await new Promise((resolve, reject) => {
-    const i = new Image();
-    i.crossOrigin = "anonymous"; // nécessaire pour analyser une photo hébergée sur Supabase
-    i.onload = () => resolve(i);
-    i.onerror = reject;
-    // Le petit paramètre ajouté évite que le navigateur réutilise une version en cache
-    // chargée sans autorisation d'analyse (souci fréquent sur Safari/iPhone).
-    i.src = src.startsWith("http") ? `${src}${src.includes("?") ? "&" : "?"}color=1` : src;
-  });
-  const size = 60;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(img, img.width * 0.2, img.height * 0.2, img.width * 0.6, img.height * 0.6, 0, 0, size, size);
-  const data = ctx.getImageData(0, 0, size, size).data;
-  const buckets = {};
-  for (let p = 0; p < data.length; p += 4) {
-    const r = data[p], g = data[p + 1], b = data[p + 2];
-    const k = `${r >> 5}-${g >> 5}-${b >> 5}`;
-    const bucket = buckets[k] || (buckets[k] = { count: 0, r: 0, g: 0, b: 0 });
-    bucket.count++;
-    bucket.r += r;
-    bucket.g += g;
-    bucket.b += b;
-  }
-  let best = null;
-  for (const k in buckets) if (!best || buckets[k].count > best.count) best = buckets[k];
-  const toHex = (v) => Math.round(v / best.count).toString(16).padStart(2, "0");
-  return `#${toHex(best.r)}${toHex(best.g)}${toHex(best.b)}`;
-}
-
-const EMPTY_OUTFIT_TAGS = { seasons: [], weather: [], occasions: [] };
-
-// Noms au pluriel pour les titres de rangées de la Garde-robe.
-const CATEGORY_PLURALS = {
-  Haut: "Hauts", Pull: "Pulls", Chemise: "Chemises", Veste: "Vestes", Robe: "Robes",
-  Bas: "Bas", Chaussures: "Chaussures", Accessoire: "Accessoires",
-};
-
-// Tris et filtres proposés dans la page "Tout voir" d'une catégorie.
-const CATEGORY_SORTS = [
-  { id: "couleur", label: "Couleur" },
-  { id: "recent", label: "Récents" },
-  { id: "worn", label: "Plus portés" },
-  { id: "favoris", label: "Favoris" },
-  { id: "jamais", label: "Jamais portés" },
-];
 // L'ordre des onglets détermine le sens du glissement : passer de "dressing"
 // à "tenues" glisse vers la gauche, l'inverse glisse vers la droite.
 const TAB_ORDER = ["accueil", "dressing", "tenues", "agenda"];
 
 function getGreeting(name) {
   const hour = new Date().getHours();
-  if (hour < 12) return `Bonjour ${name} ✨`;
-  if (hour < 18) return `Bon après-midi ${name}`;
-  return `Bonsoir ${name}`;
+  if (hour < 12) return `Bonjour ${name} ! Belle journée en préparation ✨`;
+  if (hour < 18) return `Bon après-midi ${name} ! On compose une tenue ?`;
+  return `Bonsoir ${name} ! Un œil sur la tenue de demain ?`;
 }
 
 // Formate une date ISO en "27 août" par exemple, pour l'affichage de l'historique.
@@ -187,18 +94,12 @@ export default function App() {
     setSlideDir(to >= from ? "right" : "left");
     setView(newView);
     setDetailItemId(null);
-    setCategoryView(null);
   }
 
   // Détection du glissement au doigt (swipe) : on note où le doigt touche l'écran,
   // et où il le quitte, pour calculer la distance et la direction du geste.
   const touchStartX = useRef(null);
   function handleTouchStart(e) {
-    // Pas de changement d'onglet quand on fait défiler une rangée de vêtements au doigt.
-    if (e.target.closest("[data-no-swipe]")) {
-      touchStartX.current = null;
-      return;
-    }
     touchStartX.current = e.touches[0].clientX;
   }
   function handleTouchEnd(e) {
@@ -219,13 +120,9 @@ export default function App() {
     }
   }
 
+  const [activeFilter, setActiveFilter] = useState("Tous");
   const [searchQuery, setSearchQuery] = useState("");
-  const [showSearch, setShowSearch] = useState(false);
-  // Page "Tout voir" : la catégorie affichée en grille complète (null = vue en rangées).
-  const [categoryView, setCategoryView] = useState(null);
-  const [categorySort, setCategorySort] = useState("couleur");
-  // Id du vêtement dont la couleur est en cours de détection (null = aucune).
-  const [detectingColors, setDetectingColors] = useState(null);
+  const [sortBy, setSortBy] = useState("recent"); // "recent" | "name" | "category"
 
   const [form, setForm] = useState({ name: "", category: "Haut", hex: "#C4808C", photo: null, seasons: [], weather: [], occasions: [] });
   // Recadrage de photo : la popup s'ouvre juste après avoir choisi un fichier,
@@ -255,8 +152,6 @@ export default function App() {
   const [modalPickerFilter, setModalPickerFilter] = useState("Tous");
 
   const [outfitName, setOutfitName] = useState("");
-  // Tags choisis pour la tenue en cours de création (saisons, météo, occasions).
-  const [outfitTags, setOutfitTags] = useState(EMPTY_OUTFIT_TAGS);
   const [selectedIds, setSelectedIds] = useState([]);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [outfitSeasonFilter, setOutfitSeasonFilter] = useState("Tous");
@@ -293,13 +188,6 @@ export default function App() {
     setPlanLabel("");
     setQuickPlanMode("choice");
     setShowQuickPlanModal(true);
-  }
-
-  // Popup de confirmation générique avant une suppression irréversible.
-  // { message, onConfirm } ou null si fermée.
-  const [confirmDialog, setConfirmDialog] = useState(null);
-  function askConfirm(message, onConfirm) {
-    setConfirmDialog({ message, onConfirm });
   }
 
   // Quel vêtement est actuellement affiché en fiche détaillée (null = aucun).
@@ -452,12 +340,6 @@ export default function App() {
     setUploadingPhoto(true);
     try {
       const croppedDataUrl = await getCroppedImage(rawImageSrc, croppedAreaPixels);
-      // Détection automatique de la couleur du vêtement sur la photo recadrée.
-      // Si ça échoue, on garde simplement la couleur actuelle.
-      let detectedHex = null;
-      try {
-        detectedHex = await detectDominantColor(croppedDataUrl);
-      } catch (err) {}
       const photoUrl = await uploadPhotoToStorage(croppedDataUrl, "photo");
       const originalUrl = await uploadPhotoToStorage(rawImageSrc, "original");
       if (cropTargetItemId) {
@@ -465,14 +347,14 @@ export default function App() {
         // On garde aussi "photoOriginal" (la source utilisée pour ce recadrage), pour pouvoir
         // rouvrir le recadreur plus tard sur l'intégralité de l'image plutôt que sur un carré déjà coupé.
         const oldItem = items.find((i) => i.id === cropTargetItemId);
-        setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: photoUrl, photoOriginal: originalUrl, ...(detectedHex && { hex: detectedHex }) } : i)));
+        setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: photoUrl, photoOriginal: originalUrl } : i)));
         // On retire les anciennes versions du stockage, maintenant qu'elles ne sont plus utilisées.
         if (oldItem) {
           deleteFromStorage(oldItem.photo);
           deleteFromStorage(oldItem.photoOriginal);
         }
       } else {
-        setForm((prev) => ({ ...prev, photo: photoUrl, photoOriginal: originalUrl, ...(detectedHex && { hex: detectedHex }) }));
+        setForm((prev) => ({ ...prev, photo: photoUrl, photoOriginal: originalUrl }));
       }
     } catch (err) {
       alert("L'envoi de cette photo a échoué (vérifie ta connexion internet, ou réessaie dans un instant).");
@@ -481,6 +363,15 @@ export default function App() {
     setShowCropModal(false);
     setRawImageSrc(null);
     setCropTargetItemId(null);
+  }
+
+  function toggleFormSeason(season) {
+    setForm((prev) => ({
+      ...prev,
+      seasons: prev.seasons.includes(season)
+        ? prev.seasons.filter((s) => s !== season)
+        : [...prev.seasons, season],
+    }));
   }
 
   function toggleFormWeather(tag) {
@@ -540,78 +431,16 @@ export default function App() {
     );
   }
 
-  // Trie une liste de vêtements : "couleur" (dégradé), "worn" (plus portés d'abord)
-  // ou "recent" (derniers ajoutés d'abord).
-  function sortItems(list, mode) {
-    const copy = [...list];
-    if (mode === "couleur") return copy.sort(compareByColor);
-    if (mode === "worn") return copy.sort((a, b) => (b.wornDates || []).length - (a.wornDates || []).length);
-    return copy.sort((a, b) => b.id - a.id);
-  }
-
-  // Vêtements affichés dans la page "Tout voir" de la catégorie ouverte.
-  // "Favoris" et "Jamais portés" filtrent, puis on range par couleur.
-  const categoryItems = categoryView
-    ? sortItems(
-        items
-          .filter((i) => i.category === categoryView)
-          .filter((i) => categorySort !== "favoris" || i.favorite)
-          .filter((i) => categorySort !== "jamais" || (i.wornDates || []).length === 0),
-        categorySort === "favoris" || categorySort === "jamais" ? "couleur" : categorySort
-      )
-    : [];
-
-  // Résultats de la recherche (toutes catégories confondues).
-  const searchResults = searchQuery.trim()
-    ? sortItems(items.filter((i) => i.name.toLowerCase().includes(searchQuery.trim().toLowerCase())), "couleur")
-    : [];
-
-  const favoriteItemsCount = items.filter((i) => i.favorite).length;
-
-  function toggleFavoriteItem(id) {
-    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, favorite: !i.favorite } : i)));
-  }
-
-  // Détecte la couleur principale depuis la photo d'un vêtement (bouton sur sa fiche).
-  async function detectItemColor(item) {
-    if (!item.photo) return;
-    setDetectingColors(item.id);
-    try {
-      const hex = await detectDominantColor(item.photo);
-      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, hex } : i)));
-    } catch (err) {
-      alert("La photo n'a pas pu être analysée. Tu peux choisir la couleur à la main.");
-    }
-    setDetectingColors(null);
-  }
-
-  // Une vignette de vêtement : juste la photo (ou sa couleur s'il n'y en a pas),
-  // avec un petit cœur si c'est un favori.
-  function renderItemTile(item, sizeStyle) {
-    return (
-      <button
-        key={item.id}
-        onClick={() => setDetailItemId(item.id)}
-        aria-label={item.name}
-        className="relative rounded-2xl overflow-hidden flex-shrink-0"
-        style={{ background: "#F3F2EF", ...sizeStyle }}
-      >
-        {item.photo ? (
-          <img src={item.photo} alt={item.name} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-        ) : (
-          <div style={{ background: item.hex, width: "100%", height: "100%" }} />
-        )}
-        {item.favorite && (
-          <Heart
-            size={15}
-            color={COLORS.rose}
-            fill={COLORS.rose}
-            style={{ position: "absolute", top: 8, right: 8, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.3))" }}
-          />
-        )}
-      </button>
-    );
-  }
+  // Liste des vêtements filtrée (catégorie + recherche) puis triée, pour la vue Dressing.
+  const visibleItems = items
+    .filter((i) => activeFilter === "Tous" || i.category === activeFilter)
+    .filter((i) => i.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    .sort((a, b) => {
+      if (sortBy === "name") return a.name.localeCompare(b.name);
+      if (sortBy === "category") return a.category.localeCompare(b.category);
+      if (sortBy === "worn") return (b.wornDates || []).length - (a.wornDates || []).length; // le plus porté d'abord
+      return b.id - a.id; // "recent" : les plus récemment ajoutés d'abord
+    });
 
   const detailItem = items.find((i) => i.id === detailItemId);
 
@@ -624,56 +453,10 @@ export default function App() {
   // classique ET depuis la popup du générateur.
   function commitOutfit() {
     if (!outfitName.trim() || selectedIds.length === 0) return;
-    const newOutfit = { id: Date.now(), name: outfitName, itemIds: selectedIds, favorite: false, wornDates: [], ...outfitTags };
+    const newOutfit = { id: Date.now(), name: outfitName, itemIds: selectedIds, favorite: false, wornDates: [], occasions: [] };
     setOutfits((prev) => [...prev, newOutfit]);
     setOutfitName("");
     setSelectedIds([]);
-    setOutfitTags(EMPTY_OUTFIT_TAGS);
-  }
-
-  // Coche/décoche un tag (saison, météo ou occasion) sur la tenue en cours de création.
-  function toggleOutfitTag(field, value) {
-    setOutfitTags((prev) => ({
-      ...prev,
-      [field]: prev[field].includes(value) ? prev[field].filter((v) => v !== value) : [...prev[field], value],
-    }));
-  }
-
-  // Les 3 rangées de tags affichées au moment d'enregistrer une tenue.
-  function renderOutfitTagPicker() {
-    const groups = [
-      { field: "seasons", label: "Saisons", values: SEASONS },
-      { field: "weather", label: "Météo", values: WEATHER_TAGS },
-      { field: "occasions", label: "Occasions", values: OCCASIONS },
-    ];
-    return (
-      <div className="flex flex-col gap-3 mb-4">
-        {groups.map((g) => (
-          <div key={g.field}>
-            <div className="flex gap-1.5 flex-wrap">
-              {g.values.map((v) => {
-                const active = outfitTags[g.field].includes(v);
-                return (
-                  <button
-                    type="button"
-                    key={v}
-                    onClick={() => toggleOutfitTag(g.field, v)}
-                    className="px-2.5 py-1 rounded-full text-xs"
-                    style={{
-                      background: active ? COLORS.ink : "transparent",
-                      color: active ? "white" : COLORS.ink,
-                      border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
-                    }}
-                  >
-                    {v}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-    );
   }
 
   function saveOutfit(e) {
@@ -749,9 +532,7 @@ export default function App() {
   const [genPreference, setGenPreference] = useState(null); // null | "souvent" | "oser"
 
   // La popup du générateur, en étapes.
-  // Si la météo réelle est connue, l'étape "Il fait quel temps ?" est sautée.
-  const [wizardSteps, setWizardSteps] = useState(["piece", "meteo", "occasion", "couleur", "preference"]);
-  const WIZARD_STEPS = wizardSteps;
+  const WIZARD_STEPS = ["piece", "meteo", "occasion", "couleur", "preference"];
   const [showWizard, setShowWizard] = useState(false);
   const [wizardStep, setWizardStep] = useState(0);
   // La "pièce en tête" : si choisie, elle sera systématiquement incluse dans la suggestion,
@@ -767,26 +548,10 @@ export default function App() {
   const [wizardTargetDate, setWizardTargetDate] = useState(null);
 
   function openWizard(targetDate) {
-    const autoTag = weatherToTag(weather);
-    if (autoTag) setCurrentWeather(autoTag);
-    setWizardSteps(autoTag
-      ? ["piece", "occasion", "couleur", "preference"]
-      : ["piece", "meteo", "occasion", "couleur", "preference"]);
     setWizardStep(0);
     setWizardShowResult(false);
     setWizardTargetDate(targetDate || null);
     setShowWizard(true);
-  }
-
-  // Traduit la météo réelle (Open-Meteo) en tag : pluie d'abord, sinon selon la
-  // température maximale de la journée. Renvoie null si la météo n'est pas disponible.
-  function weatherToTag(w) {
-    if (!w) return null;
-    const rainy = (w.code >= 51 && w.code <= 67) || (w.code >= 80 && w.code <= 82) || w.code >= 95;
-    if (rainy) return "Pluie";
-    if (w.max >= 22) return "Chaud";
-    if (w.max >= 14) return "Frais";
-    return "Froid";
   }
 
   function wizardNext() {
@@ -874,24 +639,12 @@ export default function App() {
 
     const picks = [...base, pick("Chaussures")];
     const forceInclude = (cat) => baseItem && baseItem.category === cat;
-    // Une couche par-dessus le haut : soit un pull, soit une chemise ouverte (jamais les deux).
-    // Une fois sur deux environ il n'y en a pas, sauf si la pièce en tête en est une.
-    const layer = forceInclude("Pull") ? "Pull"
-      : forceInclude("Chemise") ? "Chemise"
-      : Math.random() < 0.5 ? null
-      : Math.random() < 0.5 ? "Pull" : "Chemise";
-    if (layer) {
-      // Si la catégorie tirée est vide dans ton dressing, on essaie l'autre.
-      const layerItem = pick(layer) || (!baseItem ? pick(layer === "Pull" ? "Chemise" : "Pull") : undefined);
-      if (layerItem) picks.push(layerItem);
-    }
+    if (forceInclude("Chemise") || Math.random() > 0.5) picks.push(pick("Chemise"));
     if (forceInclude("Veste") || Math.random() > 0.5) picks.push(pick("Veste"));
     if (forceInclude("Accessoire") || Math.random() > 0.5) picks.push(pick("Accessoire"));
     const found = picks.filter(Boolean);
     setSelectedIds(found.map((i) => i.id));
     setOutfitName(found.length >= 2 ? "Tenue suggérée" : "");
-    // On pré-coche les tags de la tenue avec les critères utilisés pour la générer.
-    setOutfitTags({ seasons: [], weather: currentWeather ? [currentWeather] : [], occasions: genOccasion ? [genOccasion] : [] });
   }
 
   // Lance la génération avec les critères choisis, puis ferme la popup et ouvre
@@ -986,16 +739,6 @@ export default function App() {
     if (code === 85 || code === 86) return { label: "Averses de neige", Icon: CloudSnow };
     if (code >= 95) return { label: "Orage", Icon: CloudLightning };
     return { label: "", Icon: Cloud };
-  }
-
-  // Dégradé de la bannière Profil, fabriqué à partir des couleurs des vêtements
-  // prévus aujourd'hui. Corail uni si rien n'est encore planifié.
-  function heroGradient() {
-    const todayItems = todayEntries.flatMap((e) => e.planItems).filter(Boolean);
-    const colors = todayItems.map((i) => i.hex).filter(Boolean).slice(0, 3);
-    if (colors.length === 0) return COLORS.rose;
-    if (colors.length === 1) return colors[0];
-    return `linear-gradient(155deg, ${colors.join(", ")})`;
   }
 
   function formatTodayHeader() {
@@ -1111,36 +854,8 @@ export default function App() {
     .filter((entry) => entry.planItems.length > 0)
     .sort((a, b) => a.dateStr.localeCompare(b.dateStr) || String(a.entryId).localeCompare(String(b.entryId)));
 
-  // Tenues planifiées regroupées par mois, pour les rangées de l'Agenda :
-  // le mois en cours d'abord, puis les mois à venir, puis les mois passés (du plus récent au plus ancien).
-  const agendaMonthGroups = (() => {
-    const currentMonth = todayKey().slice(0, 7);
-    const byMonth = {};
-    agendaEntries.forEach((e) => {
-      const k = e.dateStr.slice(0, 7);
-      (byMonth[k] = byMonth[k] || []).push(e);
-    });
-    const keys = Object.keys(byMonth);
-    const future = keys.filter((k) => k > currentMonth).sort();
-    const past = keys.filter((k) => k < currentMonth).sort().reverse();
-    const ordered = [...(byMonth[currentMonth] ? [currentMonth] : []), ...future, ...past];
-    return ordered.map((k) => ({ key: k, entries: byMonth[k] }));
-  })();
-
-  // "Septembre 2026"
-  function formatMonthLabel(monthKey) {
-    const [y, m] = monthKey.split("-").map(Number);
-    const str = new Date(y, m - 1, 1).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
-    return str.charAt(0).toUpperCase() + str.slice(1);
-  }
-
-  // Date courte sous chaque vignette de l'Agenda : "Aujourd'hui", "Demain" ou "jeu. 24".
-  function formatShortDate(dateStr) {
-    if (dateStr === todayKey()) return "Aujourd'hui";
-    if (dateStr === tomorrowKey()) return "Demain";
-    const [y, m, d] = dateStr.split("-").map(Number);
-    return new Date(y, m - 1, d).toLocaleDateString("fr-FR", { weekday: "short", day: "numeric" });
-  }
+  const upcomingEntries = agendaEntries.filter((e) => e.dateStr >= todayKey());
+  const pastEntries = agendaEntries.filter((e) => e.dateStr < todayKey()).reverse(); // plus récent en premier
   const todayEntries = agendaEntries.filter((e) => e.dateStr === todayKey());
   const tomorrowEntries = agendaEntries.filter((e) => e.dateStr === tomorrowKey());
 
@@ -1186,7 +901,7 @@ export default function App() {
     return (
       <div style={{ background: "#FFFFFF", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <style>{`
-          @import url('https://fonts.googleapis.com/css2?family=Karla:wght@400;500;600;700&family=Merriweather:wght@400;700&display=swap');
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
           @keyframes splashIn {
             from { opacity: 0; transform: translateY(10px); }
             to   { opacity: 1; transform: translateY(0); }
@@ -1199,15 +914,18 @@ export default function App() {
           .splash-logo { animation: splashIn 0.7s ease-out 0.25s forwards; opacity: 0; }
           .splash-tag   { animation: splashIn 0.7s ease-out 0.4s forwards; opacity: 0; }
         `}</style>
-        <div style={{ textAlign: "center", fontFamily: "Karla, sans-serif" }}>
+        <div style={{ textAlign: "center", fontFamily: "Inter, sans-serif" }}>
           <div
             className="splash-mark"
             style={{ width: 56, height: 56, borderRadius: "50%", background: "#FF4B33", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}
           >
             <Shirt size={26} color="#FFFFFF" />
           </div>
-          <div className="splash-logo" style={{ fontSize: 28, fontWeight: 700, color: "#111111", fontFamily: "'Merriweather', serif" }}>
+          <div className="splash-logo" style={{ fontSize: 28, fontWeight: 700, color: "#111111", letterSpacing: "-0.02em" }}>
             Mon Armoire
+          </div>
+          <div className="splash-tag" style={{ fontSize: 13, color: "#999999", marginTop: 6 }}>
+            Lorem ipsum dolor sit amet
           </div>
         </div>
       </div>
@@ -1219,12 +937,12 @@ export default function App() {
   if (!userName) {
     return (
       <div style={{ background: "#FFFFFF", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-        <style>{`@import url('https://fonts.googleapis.com/css2?family=Karla:wght@400;500;600;700&family=Merriweather:wght@400;700&display=swap'); * { font-family: 'Karla', sans-serif; }`}</style>
+        <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap'); * { font-family: 'Inter', sans-serif; }`}</style>
         <div style={{ width: "100%", maxWidth: 320, textAlign: "center" }}>
           <div style={{ width: 56, height: 56, borderRadius: "50%", background: "#FF4B33", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
             <Shirt size={26} color="#FFFFFF" />
           </div>
-          <p style={{ fontSize: 22, fontWeight: 700, color: "#111111", marginBottom: 8, fontFamily: "'Merriweather', serif" }}>Bienvenue dans Mon Armoire</p>
+          <p style={{ fontSize: 22, fontWeight: 700, color: "#111111", marginBottom: 8 }}>Bienvenue dans Mon Armoire</p>
           <p style={{ fontSize: 14, color: "#999999", marginBottom: 20 }}>Comment tu t'appelles ?</p>
           <input
             value={nameInput}
@@ -1251,9 +969,9 @@ export default function App() {
   return (
     <div style={{ background: COLORS.ivory, minHeight: "100vh", color: COLORS.ink }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Karla:wght@400;500;600;700&family=Merriweather:wght@400;700&display=swap');
-        * { font-family: 'Karla', sans-serif; box-sizing: border-box; }
-        .display { font-family: 'Merriweather', serif; letter-spacing: 0; }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        * { font-family: 'Inter', sans-serif; box-sizing: border-box; }
+        .display { font-family: 'Inter', sans-serif; letter-spacing: -0.02em; }
         @keyframes appIn {
           from { opacity: 0; }
           to   { opacity: 1; }
@@ -1271,8 +989,6 @@ export default function App() {
         .slide-left  { animation: slideFromLeft 0.28s ease-out; }
         @keyframes wizardSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .wizard-spin { animation: wizardSpin 0.9s linear infinite; display: inline-flex; }
-        .no-scrollbar { scrollbar-width: none; -webkit-overflow-scrolling: touch; }
-        .no-scrollbar::-webkit-scrollbar { display: none; }
       `}</style>
 
       <div
@@ -1281,138 +997,135 @@ export default function App() {
       >
         {/* ── EN-TÊTE — uniquement sur la page Profil ── */}
         {view === "accueil" && (
-          <div className="-mx-5 -mt-10 mb-6" style={{ position: "relative", overflow: "hidden", borderRadius: "0 0 28px 28px", background: heroGradient() }}>
-            <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(0,0,0,0.08) 0%, rgba(0,0,0,0.48) 100%)" }} />
-            <div style={{ position: "relative", padding: "44px 20px 28px 20px" }}>
-              {weatherStatus === "granted" && weather ? (
-                <p className="text-sm" style={{ color: "rgba(255,255,255,0.85)" }}>{formatTodayHeader()} · {weather.temp}°</p>
-              ) : (
-                <p className="text-sm" style={{ color: "rgba(255,255,255,0.85)" }}>{formatTodayHeader()}</p>
-              )}
-              <h1 className="display" style={{ fontWeight: 700, fontSize: 30, color: "#ffffff", marginTop: 6, lineHeight: 1.1 }}>{getGreeting(userName)}</h1>
-              {(weatherStatus === "denied" || weatherStatus === "error") && (
-                <button onClick={requestWeather} className="text-xs mt-2" style={{ color: "#ffffff", textDecoration: "underline" }}>
-                  Activer la météo
-                </button>
-              )}
-            </div>
+          <div className="mb-7">
+            <h1 className="display text-3xl" style={{ fontWeight: 600 }}>{formatTodayHeader()}</h1>
+
+            {weatherStatus === "granted" && weather && (() => {
+              const { label, Icon } = getWeatherInfo(weather.code);
+              return (
+                <div className="mt-1">
+                  <div className="flex items-center gap-1.5">
+                    <Icon size={16} color={COLORS.rose} />
+                    <p className="text-sm" style={{ color: COLORS.ink, opacity: 0.8 }}>{label}, {weather.temp}°</p>
+                  </div>
+                  <p className="text-xs" style={{ color: COLORS.muted }}>{weather.min}° - {weather.max}°</p>
+                </div>
+              );
+            })()}
+
+            {weatherStatus === "loading" && (
+              <p className="text-xs mt-1" style={{ color: COLORS.muted }}>Météo…</p>
+            )}
+
+            {(weatherStatus === "denied" || weatherStatus === "error") && (
+              <button onClick={requestWeather} className="text-xs mt-1" style={{ color: COLORS.rose }}>
+                Activer la météo
+              </button>
+            )}
           </div>
         )}
 
         {/* ══════════════════ VUE ACCUEIL ══════════════════ */}
         {view === "accueil" && (
           <div key={view} className={slideDir === "right" ? "slide-right" : "slide-left"}>
-            <div className="mb-6">
-              <div className="flex items-center justify-between mb-3">
-                <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Pour aujourd'hui</p>
-                <button
-                  type="button"
-                  onClick={() => openQuickPlan(todayKey())}
-                  aria-label={todayEntries.length > 0 ? "Ajouter une autre tenue pour aujourd'hui" : "Planifier une tenue pour aujourd'hui"}
-                  className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
-                  style={{ background: COLORS.haze, color: COLORS.ink }}
-                >
-                  <Plus size={14} />
-                </button>
-              </div>
+            <div className="p-5 rounded-lg mb-5" style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}>
+              <p className="display text-xl mb-4" style={{ fontWeight: 600 }}>{getGreeting(userName)}</p>
 
               {todayEntries.map((entry) => {
                 const validated = isPlanValidatedToday(entry.planItems);
                 return (
-                  <div key={entry.entryId} onClick={() => setOpenEntryId(entry.entryId)} className="relative mb-5 cursor-pointer">
-                    <div className="flex items-center pr-8 mb-2">
-                      <p className="text-sm font-medium" style={{ color: COLORS.rose }}>
-                        {entry.label}{validated ? " ✓" : ""}
-                      </p>
-                    </div>
+                  <div
+                    key={entry.entryId}
+                    onClick={() => setOpenEntryId(entry.entryId)}
+                    className="relative mb-4 p-4 rounded-lg cursor-pointer"
+                    style={{ background: COLORS.ivory, border: `1px solid ${COLORS.line}` }}
+                  >
                     <button
                       type="button"
-                      onClick={(e) => { e.stopPropagation(); askConfirm("Supprimer cette tenue prévue ?", () => removeAgendaEntry(entry.dateStr, entry.entryId)); }}
-                      className="absolute top-0 right-0 w-6 h-6 rounded-full flex items-center justify-center"
+                      onClick={(e) => { e.stopPropagation(); removeAgendaEntry(entry.dateStr, entry.entryId); }}
+                      className="absolute top-3 right-3 w-6 h-6 rounded-full flex items-center justify-center"
                       style={{ background: "rgba(0,0,0,0.06)" }}
                     >
                       <X size={13} />
                     </button>
-                    <div className="grid grid-cols-3 gap-2">
+                    <p className="text-sm font-medium mb-3 pr-8" style={{ color: COLORS.rose }}>
+                      {entry.label} {validated ? "— validée ✓" : "— toujours partante ?"}
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                       {entry.planItems.map((item) => (
-                        <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
+                        <div key={item.id} className="rounded-lg overflow-hidden" style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}>
                           {item.photo ? (
-                            <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                            <img src={item.photo} alt={item.name} style={{ width: "100%", height: 80, objectFit: "cover" }} />
                           ) : (
-                            <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
+                            <div style={{ background: item.hex, height: 80 }} />
                           )}
+                          <div className="p-2">
+                            <p className="text-xs font-medium truncate">{item.name}</p>
+                            <p className="text-[11px]" style={{ color: COLORS.muted }}>{item.category}</p>
+                          </div>
                         </div>
                       ))}
                     </div>
                   </div>
                 );
               })}
-            </div>
 
-            {/* ── Stats, en ligne, séparées par un simple trait ── */}
-            <div className="flex items-end gap-7 pb-5 mb-6" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
-              <button type="button" onClick={() => changeView("dressing")} className="text-left">
-                <p className="display" style={{ fontWeight: 700, fontSize: 26, lineHeight: 1 }}>{items.length}</p>
-                <p className="text-xs mt-1" style={{ color: COLORS.muted }}>vêtement{items.length > 1 ? "s" : ""}</p>
+              <button
+                type="button"
+                onClick={() => openQuickPlan(todayKey())}
+                className="flex items-center gap-1.5 text-xs"
+                style={{ color: COLORS.rose }}
+              >
+                <Plus size={13} /> {todayEntries.length > 0 ? "Ajouter une autre tenue pour aujourd'hui" : "Planifier une tenue pour aujourd'hui"}
               </button>
-              <button type="button" onClick={() => changeView("tenues")} className="text-left">
-                <p className="display" style={{ fontWeight: 700, fontSize: 26, lineHeight: 1 }}>{outfits.length}</p>
-                <p className="text-xs mt-1" style={{ color: COLORS.muted }}>tenue{outfits.length > 1 ? "s" : ""}</p>
-              </button>
-              <div className="text-left">
-                <p className="display" style={{ fontWeight: 700, fontSize: 26, lineHeight: 1, color: COLORS.rose }}>{favoriteItemsCount}</p>
-                <p className="text-xs mt-1" style={{ color: COLORS.muted }}>favori{favoriteItemsCount > 1 ? "s" : ""}</p>
-              </div>
             </div>
 
             {/* ── Et demain ? ── */}
-            {tomorrowEntries.length === 0 ? (
-              <button
-                type="button"
-                onClick={() => openQuickPlan(tomorrowKey())}
-                className="w-full flex items-center justify-between p-4 rounded-2xl text-left mb-6"
-                style={{ background: COLORS.haze }}
-              >
-                <div>
-                  <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Et demain ?</p>
-                  <p className="text-xs mt-0.5" style={{ color: COLORS.muted }}>Rien de prévu</p>
-                </div>
-                <span className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.ink }}>
-                  <Plus size={16} color="#ffffff" />
-                </span>
-              </button>
-            ) : (
-              <div className="p-4 rounded-2xl mb-6" style={{ background: COLORS.haze }}>
-                <div className="flex items-center justify-between mb-3">
-                  <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Et demain ?</p>
-                  <button
-                    type="button"
-                    onClick={() => openQuickPlan(tomorrowKey())}
-                    aria-label="Ajouter une tenue pour demain"
-                    className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
-                    style={{ background: COLORS.ivory, color: COLORS.ink }}
-                  >
-                    <Plus size={14} />
-                  </button>
-                </div>
-                {tomorrowEntries.map((entry) => (
+            <div className="p-5 rounded-lg mb-5" style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}>
+              <p className="display text-xl mb-3" style={{ fontWeight: 600 }}>Et demain ?</p>
+
+              {tomorrowEntries.length === 0 ? (
+                <p className="text-xs mb-3" style={{ opacity: 0.5 }}>Rien de prévu.</p>
+              ) : (
+                tomorrowEntries.map((entry) => (
                   <div key={entry.entryId} className="mb-3">
                     <p className="text-xs font-medium mb-2" style={{ color: COLORS.rose }}>{entry.label}</p>
                     <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                       {entry.planItems.map((item) => (
-                        <div key={item.id} className="rounded-lg overflow-hidden" style={{ background: COLORS.ivory }}>
+                        <div key={item.id} className="rounded-lg overflow-hidden" style={{ background: COLORS.ivory, border: `1px solid ${COLORS.line}` }}>
                           {item.photo ? (
-                            <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                            <img src={item.photo} alt={item.name} style={{ width: "100%", height: 56, objectFit: "cover" }} />
                           ) : (
-                            <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
+                            <div style={{ background: item.hex, height: 56 }} />
                           )}
+                          <p className="text-[10px] px-1.5 py-1 truncate">{item.name}</p>
                         </div>
                       ))}
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
+                ))
+              )}
+
+              <button
+                type="button"
+                onClick={() => openQuickPlan(tomorrowKey())}
+                className="flex items-center gap-1.5 text-xs"
+                style={{ color: COLORS.rose }}
+              >
+                <Plus size={13} /> Ajouter une tenue pour demain
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mb-6">
+              <button onClick={() => changeView("dressing")} className="p-4 rounded-lg text-left" style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}>
+                <p className="display text-2xl" style={{ fontWeight: 600, color: COLORS.rose }}>{items.length}</p>
+                <p className="text-xs" style={{ opacity: 0.6 }}>vêtement{items.length > 1 ? "s" : ""} au total</p>
+              </button>
+              <button onClick={() => changeView("tenues")} className="p-4 rounded-lg text-left" style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}>
+                <p className="display text-2xl" style={{ fontWeight: 600, color: COLORS.sage }}>{outfits.length}</p>
+                <p className="text-xs" style={{ opacity: 0.6 }}>tenue{outfits.length > 1 ? "s" : ""} enregistrée{outfits.length > 1 ? "s" : ""}</p>
+              </button>
+            </div>
 
 
             {/* ── Popup "tenue du jour" ── */}
@@ -1486,9 +1199,10 @@ export default function App() {
                                 className="rounded-lg overflow-hidden text-left"
                                 style={{ border: `1px solid ${COLORS.line}` }}
                               >
-                                <div style={{ background: item.hex, aspectRatio: "1 / 1", overflow: "hidden" }}>
+                                <div style={{ background: item.hex, height: 36, overflow: "hidden" }}>
                                   {item.photo && <img src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
                                 </div>
+                                <p className="text-[10px] px-1 py-0.5 truncate">{item.name}</p>
                               </button>
                             ))}
                         </div>
@@ -1517,7 +1231,7 @@ export default function App() {
                     </button>
 
                     <button
-                      onClick={() => askConfirm("Supprimer cette tenue prévue ?", () => { removeAgendaEntry(entry.dateStr, entry.entryId); setOpenEntryId(null); })}
+                      onClick={() => { removeAgendaEntry(entry.dateStr, entry.entryId); setOpenEntryId(null); }}
                       className="w-full text-center text-xs mt-3"
                       style={{ color: COLORS.muted }}
                     >
@@ -1532,53 +1246,19 @@ export default function App() {
 
         {/* ══════════════════ VUE DRESSING ══════════════════ */}
         {view === "dressing" && !detailItem && (
-          <div key={view + (categoryView || "")} className={categoryView ? "slide-right" : slideDir === "right" ? "slide-right" : "slide-left"}>
-            {/* En-tête : "Garde-robe" en vue rangées, nom de la catégorie en vue "Tout voir" */}
-            {!categoryView ? (
-              <div className="flex items-end justify-between mb-6">
-                <div>
-                  <h1 className="display text-3xl" style={{ fontWeight: 600 }}>Garde-robe</h1>
-                  <p className="text-sm mt-1" style={{ color: COLORS.muted }}>
-                    {items.length} pièce{items.length > 1 ? "s" : ""}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => { setShowSearch((v) => !v); setSearchQuery(""); }}
-                  aria-label={showSearch ? "Fermer la recherche" : "Rechercher"}
-                  className="w-11 h-11 -mr-2 rounded-full flex items-center justify-center"
-                  style={{ background: showSearch ? "rgba(0,0,0,0.06)" : "transparent" }}
-                >
-                  {showSearch ? <X size={20} /> : <Search size={20} />}
-                </button>
-              </div>
-            ) : (
-              <div className="mb-5">
-                <button
-                  type="button"
-                  onClick={() => setCategoryView(null)}
-                  aria-label="Retour à la garde-robe"
-                  className="w-11 h-11 -ml-3 mb-1 rounded-full flex items-center justify-center"
-                >
-                  <ArrowLeft size={20} />
-                </button>
-                <h1 className="display text-3xl" style={{ fontWeight: 600 }}>{CATEGORY_PLURALS[categoryView] || categoryView}</h1>
-                <p className="text-sm mt-1" style={{ color: COLORS.muted }}>
-                  {categoryItems.length} pièce{categoryItems.length > 1 ? "s" : ""}
-                </p>
-              </div>
-            )}
-
-            {/* Bouton flottant "+" pour ajouter un vêtement, au-dessus de la barre de navigation */}
-            <button
-              type="button"
-              onClick={() => setShowAddForm(true)}
-              aria-label="Ajouter un vêtement"
-              className="flex items-center justify-center rounded-full text-white"
-              style={{ position: "fixed", right: 20, bottom: 84, width: 56, height: 56, background: COLORS.rose, boxShadow: "0 6px 18px rgba(255,75,51,0.35)", zIndex: 30 }}
-            >
-              <Plus size={24} />
-            </button>
+          <div key={view} className={slideDir === "right" ? "slide-right" : "slide-left"}>
+            {/* Bouton pour ouvrir/fermer le formulaire d'ajout — replié par défaut */}
+            <div className="flex gap-2 mb-4 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setShowAddForm((v) => !v)}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm text-white"
+                style={{ background: COLORS.rose }}
+              >
+                <Plus size={16} style={{ transform: showAddForm ? "rotate(45deg)" : "none", transition: "transform 0.15s" }} />
+                {showAddForm ? "Fermer" : "Ajouter un vêtement"}
+              </button>
+            </div>
 
             {showAddForm && (
               <div
@@ -1595,23 +1275,42 @@ export default function App() {
                   </div>
                   <form onSubmit={(e) => { addItem(e); setShowAddForm(false); }} className="flex flex-wrap gap-3 items-end">
                     <div className="flex-1 min-w-[140px]">
-                      <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Nom du vêtement" className="w-full px-3 py-2 rounded text-sm" style={{ border: `1px solid ${COLORS.line}`, outline: "none" }} />
+                      <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Nom</label>
+                      <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Ex : Chemise en lin" className="w-full px-3 py-2 rounded text-sm" style={{ border: `1px solid ${COLORS.line}`, outline: "none" }} />
                     </div>
                     <div>
+                      <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Catégorie</label>
                       <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className="px-3 py-2 rounded text-sm" style={{ border: `1px solid ${COLORS.line}` }}>
                         {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
                       </select>
                     </div>
                     <div>
+                      <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Photo</label>
                       <label className="flex items-center justify-center rounded cursor-pointer overflow-hidden" style={{ width: 40, height: 36, border: `1px solid ${COLORS.line}`, background: form.photo ? "transparent" : "#FAFAFA" }}>
                         {form.photo ? <img src={form.photo} alt="Aperçu" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <Camera size={15} style={{ opacity: 0.4 }} />}
                         <input type="file" accept="image/*" onChange={handlePhotoChange} className="hidden" />
                       </label>
                     </div>
                     <div>
+                      <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Couleur</label>
                       <input type="color" value={form.hex} onChange={(e) => setForm({ ...form, hex: e.target.value })} className="w-10 h-9 rounded cursor-pointer" style={{ border: `1px solid ${COLORS.line}` }} />
                     </div>
                     <div className="w-full">
+                      <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Saison{form.seasons.length > 1 ? "s" : ""}</label>
+                      <div className="flex gap-1.5 flex-wrap">
+                        {SEASONS.map((s) => (
+                          <button type="button" key={s} onClick={() => toggleFormSeason(s)} className="px-2.5 py-1 rounded-full text-xs" style={{
+                            background: form.seasons.includes(s) ? COLORS.sage : "transparent",
+                            color: form.seasons.includes(s) ? "white" : COLORS.ink,
+                            border: `1px solid ${form.seasons.includes(s) ? COLORS.sage : COLORS.line}`,
+                          }}>
+                            {s}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="w-full">
+                      <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Météo adaptée</label>
                       <div className="flex gap-1.5 flex-wrap">
                         {WEATHER_TAGS.map((w) => (
                           <button type="button" key={w} onClick={() => toggleFormWeather(w)} className="px-2.5 py-1 rounded-full text-xs" style={{
@@ -1625,6 +1324,7 @@ export default function App() {
                       </div>
                     </div>
                     <div className="w-full">
+                      <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Occasion{form.occasions.length > 1 ? "s" : ""}</label>
                       <div className="flex gap-1.5 flex-wrap">
                         {OCCASIONS.map((o) => (
                           <button type="button" key={o} onClick={() => toggleFormOccasion(o)} className="px-2.5 py-1 rounded-full text-xs" style={{
@@ -1645,98 +1345,57 @@ export default function App() {
               </div>
             )}
 
-            {/* Barre de recherche, ouverte avec la loupe */}
-            {showSearch && !categoryView && (
-              <div className="flex items-center gap-2 px-4 py-2.5 rounded-full mb-6" style={{ background: "#F3F2EF" }}>
-                <Search size={15} style={{ opacity: 0.45 }} />
-                <input
-                  autoFocus
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Rechercher un vêtement..."
-                  className="flex-1 text-sm outline-none"
-                  style={{ background: "transparent" }}
-                />
+            {/* Recherche + tri */}
+            <div className="flex flex-wrap gap-2 mb-4">
+              <div className="flex items-center gap-2 flex-1 min-w-[160px] px-3 py-2 rounded" style={{ border: `1px solid ${COLORS.line}`, background: COLORS.card }}>
+                <Search size={14} style={{ opacity: 0.4 }} />
+                <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Rechercher un vêtement..." className="flex-1 text-sm outline-none" style={{ background: "transparent" }} />
               </div>
-            )}
+              <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className="px-3 py-2 rounded text-sm" style={{ border: `1px solid ${COLORS.line}`, background: COLORS.card }}>
+                <option value="recent">Plus récents</option>
+                <option value="name">Nom (A-Z)</option>
+                <option value="category">Catégorie</option>
+                <option value="worn">Le plus porté</option>
+              </select>
+            </div>
 
-            {searchQuery.trim() && !categoryView ? (
-              /* ── Résultats de recherche ── */
-              searchResults.length === 0 ? (
-                <p className="text-sm py-10 text-center" style={{ color: COLORS.muted }}>Aucun résultat</p>
-              ) : (
-                <div className="grid grid-cols-3 gap-2">
-                  {searchResults.map((item) => renderItemTile(item, { width: "100%", aspectRatio: "1 / 1" }))}
-                </div>
-              )
-            ) : !categoryView ? (
-              /* ── Vue en rangées : une rangée par catégorie, qui défile sur le côté ── */
-              items.length === 0 ? (
-                <p className="text-sm py-10 text-center" style={{ color: COLORS.muted }}>Ta garde-robe est vide</p>
-              ) : (
-                <div className="flex flex-col gap-7">
-                  {CATEGORIES.map((cat) => {
-                    const catItems = sortItems(items.filter((i) => i.category === cat), "couleur");
-                    if (catItems.length === 0) return null;
-                    return (
-                      <section key={cat}>
-                        <div className="flex items-baseline justify-between mb-3">
-                          <h2 className="text-base" style={{ fontWeight: 600, fontFamily: "'Karla', sans-serif" }}>
-                            {CATEGORY_PLURALS[cat] || cat}{" "}
-                            <span style={{ fontWeight: 400, color: COLORS.muted }}>· {catItems.length}</span>
-                          </h2>
-                          <button
-                            type="button"
-                            onClick={() => { setCategoryView(cat); setCategorySort("couleur"); }}
-                            className="text-sm py-2"
-                            style={{ color: COLORS.rose, fontWeight: 500 }}
-                          >
-                            Tout voir
-                          </button>
-                        </div>
-                        <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2.5 overflow-x-auto">
-                          {catItems.map((item) => renderItemTile(item, { width: 112, height: 112 }))}
-                        </div>
-                      </section>
-                    );
-                  })}
+            <div className="flex gap-2 mb-6 flex-wrap">
+              {["Tous", ...CATEGORIES].map((cat) => (
+                <button key={cat} onClick={() => setActiveFilter(cat)} className="px-3 py-1.5 rounded-full text-xs" style={{
+                  background: activeFilter === cat ? COLORS.ink : "transparent",
+                  color: activeFilter === cat ? COLORS.ivory : COLORS.ink,
+                  border: `1px solid ${activeFilter === cat ? COLORS.ink : COLORS.line}`,
+                }}>
+                  {cat}
+                </button>
+              ))}
+            </div>
 
-                </div>
-              )
+            {visibleItems.length === 0 ? (
+              <p className="text-sm py-10 text-center" style={{ opacity: 0.5 }}>Rien à afficher — ajoute un vêtement ou change ta recherche.</p>
             ) : (
-              /* ── Vue "Tout voir" d'une catégorie : grille à 3 colonnes ── */
-              <div>
-                <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2 overflow-x-auto mb-4">
-                  {CATEGORY_SORTS.map((s) => {
-                    const active = categorySort === s.id;
-                    return (
-                      <button
-                        key={s.id}
-                        type="button"
-                        onClick={() => setCategorySort(s.id)}
-                        className="flex-shrink-0 px-4 rounded-full text-sm"
-                        style={{
-                          height: 36,
-                          background: active ? COLORS.ink : "transparent",
-                          color: active ? "white" : COLORS.ink,
-                          border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
-                          fontWeight: active ? 500 : 400,
-                        }}
-                      >
-                        {s.label}
-                      </button>
-                    );
-                  })}
-                </div>
-                {categoryItems.length === 0 ? (
-                  <p className="text-sm py-10 text-center" style={{ color: COLORS.muted }}>
-                    {categorySort === "favoris" ? "Aucun favori" : categorySort === "jamais" ? "Tout a déjà été porté ✓" : "Vide"}
-                  </p>
-                ) : (
-                  <div className="grid grid-cols-3 gap-2">
-                    {categoryItems.map((item) => renderItemTile(item, { width: "100%", aspectRatio: "1 / 1" }))}
-                  </div>
-                )}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {visibleItems.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => setDetailItemId(item.id)}
+                    className="rounded-lg overflow-hidden relative group text-left"
+                    style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}
+                  >
+                    {item.photo ? (
+                      <img src={item.photo} alt={item.name} style={{ width: "100%", height: 80, objectFit: "cover" }} />
+                    ) : (
+                      <div style={{ background: item.hex, height: 80 }} />
+                    )}
+                    <div className="p-3">
+                      <p className="text-sm font-medium">{item.name}</p>
+                      <p className="text-xs" style={{ color: COLORS.muted }}>
+                        {item.category}
+                        {sortBy === "worn" && ` · portée ${(item.wornDates || []).length}x`}
+                      </p>
+                    </div>
+                  </button>
+                ))}
               </div>
             )}
           </div>
@@ -1746,7 +1405,7 @@ export default function App() {
         {view === "dressing" && detailItem && (
           <div key={detailItemId} className="slide-right">
             <button onClick={() => setDetailItemId(null)} className="flex items-center gap-1.5 text-sm mb-4" style={{ opacity: 0.6 }}>
-              <ArrowLeft size={18} />
+              <ArrowLeft size={15} /> Retour aux articles
             </button>
 
             <div className="rounded-lg overflow-hidden mb-4 relative" style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}>
@@ -1784,21 +1443,14 @@ export default function App() {
                   <input type="file" accept="image/*" onChange={(e) => handlePhotoChange(e, detailItem.id)} className="hidden" />
                 </label>
               </div>
-              <div className="p-4 flex items-center justify-between gap-3">
+              <div className="p-4">
                 <p className="display text-xl" style={{ fontWeight: 600 }}>{detailItem.name}</p>
-                <button
-                  type="button"
-                  onClick={() => toggleFavoriteItem(detailItem.id)}
-                  aria-label={detailItem.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}
-                  className="w-11 h-11 -mr-2 rounded-full flex items-center justify-center flex-shrink-0"
-                >
-                  <Heart size={20} color={detailItem.favorite ? COLORS.rose : COLORS.ink} fill={detailItem.favorite ? COLORS.rose : "none"} />
-                </button>
               </div>
             </div>
 
             {/* Catégorie — modifiable si tu t'es trompée à l'ajout */}
             <div className="mb-5">
+              <p className="text-xs font-medium mb-2" style={{ opacity: 0.6 }}>Catégorie</p>
               <div className="flex gap-1.5 flex-wrap">
                 {CATEGORIES.map((c) => {
                   const active = detailItem.category === c;
@@ -1822,31 +1474,39 @@ export default function App() {
 
             {/* Couleur — sert de vignette de secours sans photo, et alimente le générateur de tenue */}
             <div className="mb-5">
-              <div className="flex items-center gap-2">
-                <input
-                  type="color"
-                  value={detailItem.hex}
-                  onChange={(e) => setItems((prev) => prev.map((i) => i.id === detailItem.id ? { ...i, hex: e.target.value } : i))}
-                  className="w-12 h-9 rounded cursor-pointer"
-                  style={{ border: `1px solid ${COLORS.line}` }}
-                />
-                {detailItem.photo && (
-                  <button
-                    type="button"
-                    onClick={() => detectItemColor(detailItem)}
-                    disabled={detectingColors === detailItem.id}
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-full text-xs"
-                    style={{ border: `1px solid ${COLORS.line}`, opacity: detectingColors === detailItem.id ? 0.5 : 1 }}
-                  >
-                    <Sparkles size={13} />
-                    {detectingColors === detailItem.id ? "…" : "Détecter"}
-                  </button>
-                )}
+              <p className="text-xs font-medium mb-2" style={{ opacity: 0.6 }}>Couleur</p>
+              <input
+                type="color"
+                value={detailItem.hex}
+                onChange={(e) => setItems((prev) => prev.map((i) => i.id === detailItem.id ? { ...i, hex: e.target.value } : i))}
+                className="w-12 h-9 rounded cursor-pointer"
+                style={{ border: `1px solid ${COLORS.line}` }}
+              />
+            </div>
+
+            {/* Saisons */}
+            <div className="mb-5">
+              <p className="text-xs font-medium mb-2" style={{ opacity: 0.6 }}>Saison{detailItem.seasons.length > 1 ? "s" : ""}</p>
+              <div className="flex gap-1.5 flex-wrap">
+                {SEASONS.map((s) => {
+                  const active = detailItem.seasons.includes(s);
+                  return (
+                    <button key={s} onClick={() => setItems((prev) => prev.map((i) => i.id === detailItem.id ? { ...i, seasons: active ? i.seasons.filter((x) => x !== s) : [...i.seasons, s] } : i))}
+                      className="px-2.5 py-1 rounded-full text-xs" style={{
+                        background: active ? COLORS.sage : "transparent",
+                        color: active ? "white" : COLORS.ink,
+                        border: `1px solid ${active ? COLORS.sage : COLORS.line}`,
+                      }}>
+                      {s}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
             {/* Météo — "|| []" au cas où ce vêtement existait avant l'ajout de ce champ */}
             <div className="mb-5">
+              <p className="text-xs font-medium mb-2" style={{ opacity: 0.6 }}>Météo adaptée</p>
               <div className="flex gap-1.5 flex-wrap">
                 {WEATHER_TAGS.map((w) => {
                   const active = (detailItem.weather || []).includes(w);
@@ -1866,6 +1526,7 @@ export default function App() {
 
             {/* Occasion — "|| []" au cas où ce vêtement existait avant l'ajout de ce champ */}
             <div className="mb-5">
+              <p className="text-xs font-medium mb-2" style={{ opacity: 0.6 }}>Occasion{(detailItem.occasions || []).length > 1 ? "s" : ""}</p>
               <div className="flex gap-1.5 flex-wrap">
                 {OCCASIONS.map((o) => {
                   const active = (detailItem.occasions || []).includes(o);
@@ -1900,7 +1561,7 @@ export default function App() {
               </div>
 
               {(detailItem.pairsWith || []).length === 0 ? (
-                <p className="text-xs" style={{ opacity: 0.5 }}>Aucune</p>
+                <p className="text-xs" style={{ opacity: 0.5 }}>Aucune association pour l'instant.</p>
               ) : (
                 <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                   {(detailItem.pairsWith || []).map((otherId) => {
@@ -1908,9 +1569,10 @@ export default function App() {
                     if (!other) return null;
                     return (
                       <div key={other.id} className="rounded-lg overflow-hidden" style={{ border: `1px solid ${COLORS.line}` }}>
-                        <div style={{ background: other.hex, aspectRatio: "1 / 1", overflow: "hidden" }}>
+                        <div style={{ background: other.hex, height: 40, overflow: "hidden" }}>
                           {other.photo && <img src={other.photo} alt={other.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
                         </div>
+                        <p className="text-[10px] px-1.5 py-1 truncate">{other.name}</p>
                       </div>
                     );
                   })}
@@ -1951,9 +1613,10 @@ export default function App() {
                         const linked = (detailItem.pairsWith || []).includes(other.id);
                         return (
                           <button key={other.id} onClick={() => togglePair(detailItem.id, other.id)} className="rounded-lg overflow-hidden text-left" style={{ border: `2px solid ${linked ? COLORS.rose : COLORS.line}`, opacity: linked ? 1 : 0.7 }}>
-                            <div style={{ background: other.hex, aspectRatio: "1 / 1", overflow: "hidden" }}>
+                            <div style={{ background: other.hex, height: 44, overflow: "hidden" }}>
                               {other.photo && <img src={other.photo} alt={other.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
                             </div>
+                            <p className="text-[10px] px-1.5 py-1 truncate">{other.name}</p>
                           </button>
                         );
                       })}
@@ -1964,10 +1627,11 @@ export default function App() {
 
             {/* Notes libres */}
             <div className="mb-5">
+              <p className="text-xs font-medium mb-2" style={{ opacity: 0.6 }}>Notes</p>
               <textarea
                 value={detailItem.notes || ""}
                 onChange={(e) => setItems((prev) => prev.map((i) => (i.id === detailItem.id ? { ...i, notes: e.target.value } : i)))}
-                placeholder="Notes…"
+                placeholder="Un détail à retenir sur ce vêtement..."
                 rows={3}
                 className="w-full px-3 py-2 rounded text-sm"
                 style={{ border: `1px solid ${COLORS.line}`, outline: "none", resize: "vertical" }}
@@ -1979,11 +1643,11 @@ export default function App() {
               <div className="flex items-center gap-1.5 mb-2">
                 <Clock size={13} style={{ opacity: 0.6 }} />
                 <p className="text-xs font-medium" style={{ opacity: 0.6 }}>
-                  {(detailItem.wornDates || []).length === 0 ? "Jamais porté" : `Porté ${(detailItem.wornDates || []).length} fois`}
+                  Porté {(detailItem.wornDates || []).length} fois
                 </p>
               </div>
               {(detailItem.wornDates || []).length === 0 ? (
-                null
+                <p className="text-xs" style={{ opacity: 0.5 }}>Pas encore porté — ça viendra via une tenue !</p>
               ) : (
                 <p className="text-xs" style={{ opacity: 0.7 }}>
                   Dernière fois : {formatDate(detailItem.wornDates[(detailItem.wornDates || []).length - 1])}
@@ -1991,8 +1655,8 @@ export default function App() {
               )}
             </div>
 
-            <button onClick={() => askConfirm("Supprimer ce vêtement ?", () => removeItem(detailItem.id))} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs" style={{ border: "1px solid #C4808C", color: "#C4808C" }}>
-              <X size={13} /> Supprimer
+            <button onClick={() => removeItem(detailItem.id)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs" style={{ border: "1px solid #C4808C", color: "#C4808C" }}>
+              <X size={13} /> Supprimer ce vêtement
             </button>
           </div>
         )}
@@ -2000,31 +1664,20 @@ export default function App() {
         {/* ══════════════════ VUE TENUES ══════════════════ */}
         {view === "tenues" && (
           <div key={view} className={slideDir === "right" ? "slide-right" : "slide-left"}>
-            <div className="flex items-end justify-between mb-6">
-              <div>
-                <h1 className="display text-3xl" style={{ fontWeight: 700 }}>Tenues</h1>
-                <p className="text-sm mt-1" style={{ color: COLORS.muted }}>{outfits.length} tenue{outfits.length > 1 ? "s" : ""}</p>
-              </div>
+            <div className="flex gap-2 mb-4 flex-wrap">
               <button
                 type="button"
-                onClick={() => openWizard()}
-                aria-label="Générer une tenue"
-                className="w-11 h-11 -mr-2 rounded-full flex items-center justify-center"
-                style={{ color: COLORS.gold }}
+                onClick={() => { setCreateOutfitStep("select"); setShowOutfitForm((v) => !v); }}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm text-white"
+                style={{ background: COLORS.rose }}
               >
-                <Sparkles size={20} />
+                <Plus size={16} style={{ transform: showOutfitForm ? "rotate(45deg)" : "none", transition: "transform 0.15s" }} />
+                {showOutfitForm ? "Fermer" : "Créer une tenue"}
+              </button>
+              <button type="button" onClick={() => openWizard()} className="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm" style={{ border: `1px solid ${COLORS.gold}`, color: COLORS.gold }}>
+                <Sparkles size={14} /> Générer une tenue
               </button>
             </div>
-
-            <button
-              type="button"
-              onClick={() => { setCreateOutfitStep("select"); setOutfitTags(EMPTY_OUTFIT_TAGS); setShowOutfitForm(true); }}
-              aria-label="Créer une tenue"
-              className="flex items-center justify-center rounded-full text-white"
-              style={{ position: "fixed", right: 20, bottom: 84, width: 56, height: 56, background: COLORS.rose, boxShadow: "0 6px 18px rgba(255,75,51,0.35)", zIndex: 30 }}
-            >
-              <Plus size={24} />
-            </button>
 
             {showOutfitForm && (
               <div
@@ -2042,6 +1695,7 @@ export default function App() {
                   <form onSubmit={saveOutfit}>
                     {createOutfitStep === "select" && (
                       <>
+                        <p className="text-xs mb-3" style={{ opacity: 0.6 }}>Clique sur les vêtements à combiner.</p>
 
                         <select
                           value={outfitPickerFilter}
@@ -2059,9 +1713,10 @@ export default function App() {
                             const isSelected = selectedIds.includes(item.id);
                             return (
                               <button type="button" key={item.id} onClick={() => toggleSelected(item.id)} className="rounded-lg overflow-hidden text-left" style={{ border: `2px solid ${isSelected ? COLORS.rose : COLORS.line}`, opacity: isSelected ? 1 : 0.7 }}>
-                                <div style={{ background: item.hex, aspectRatio: "1 / 1", overflow: "hidden" }}>
+                                <div style={{ background: item.hex, height: 44, overflow: "hidden" }}>
                                   {item.photo && <img src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
                                 </div>
+                                <p className="text-[11px] px-1.5 py-1 truncate">{item.name}</p>
                               </button>
                             );
                           })}
@@ -2095,20 +1750,20 @@ export default function App() {
                             const item = items.find((i) => i.id === id);
                             if (!item) return null;
                             return (
-                              <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
+                              <div key={item.id} className="rounded-lg overflow-hidden" style={{ background: COLORS.ivory, border: `1px solid ${COLORS.line}` }}>
                                 {item.photo ? (
-                                  <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                                  <img src={item.photo} alt={item.name} style={{ width: "100%", height: 50, objectFit: "cover" }} />
                                 ) : (
-                                  <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
+                                  <div style={{ background: item.hex, height: 50 }} />
                                 )}
+                                <p className="text-[10px] px-1.5 py-1 truncate">{item.name}</p>
                               </div>
                             );
                           })}
                         </div>
 
-                        <input value={outfitName} onChange={(e) => setOutfitName(e.target.value)} placeholder="Nom de la tenue" className="w-full px-3 py-2 rounded text-sm mb-3" style={{ border: `1px solid ${COLORS.line}`, outline: "none" }} />
-
-                        {renderOutfitTagPicker()}
+                        <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Nom de la tenue</label>
+                        <input value={outfitName} onChange={(e) => setOutfitName(e.target.value)} placeholder="Ex : Look bureau lundi" className="w-full px-3 py-2 rounded text-sm mb-3" style={{ border: `1px solid ${COLORS.line}`, outline: "none" }} />
 
                         <button type="submit" disabled={!outfitName.trim() || selectedIds.length === 0} className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm text-white" style={{ background: COLORS.rose, opacity: !outfitName.trim() || selectedIds.length === 0 ? 0.4 : 1 }}>
                           <Plus size={16} /> Enregistrer la tenue
@@ -2122,21 +1777,20 @@ export default function App() {
 
             {!detailOutfitId && (
             <>
-            <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2 overflow-x-auto mb-5">
-              <button onClick={() => setFavoritesOnly((v) => !v)} className="flex-shrink-0 flex items-center gap-1.5 px-4 rounded-full text-sm" style={{
-                height: 36,
-                background: favoritesOnly ? COLORS.ink : "transparent",
+            <div className="flex gap-2 flex-wrap mb-4">
+              <button onClick={() => setFavoritesOnly((v) => !v)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs" style={{
+                background: favoritesOnly ? COLORS.rose : "transparent",
                 color: favoritesOnly ? "white" : COLORS.ink,
-                border: `1px solid ${favoritesOnly ? COLORS.ink : COLORS.line}`,
+                border: `1px solid ${favoritesOnly ? COLORS.rose : COLORS.line}`,
               }}>
-                <Heart size={13} fill={favoritesOnly ? "white" : "none"} /> Favoris
+                <Heart size={13} fill={favoritesOnly ? "white" : "none"} /> Favoris seulement
               </button>
 
               <select
                 value={outfitSeasonFilter}
                 onChange={(e) => setOutfitSeasonFilter(e.target.value)}
-                className="flex-shrink-0 px-4 rounded-full text-sm"
-                style={{ height: 36, border: `1px solid ${COLORS.line}`, background: "transparent" }}
+                className="px-3 py-1.5 rounded-full text-xs"
+                style={{ border: `1px solid ${COLORS.line}`, background: COLORS.card }}
               >
                 <option value="Tous">Toutes saisons</option>
                 {SEASONS.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -2145,8 +1799,8 @@ export default function App() {
               <select
                 value={outfitWeatherFilter}
                 onChange={(e) => setOutfitWeatherFilter(e.target.value)}
-                className="flex-shrink-0 px-4 rounded-full text-sm"
-                style={{ height: 36, border: `1px solid ${COLORS.line}`, background: "transparent" }}
+                className="px-3 py-1.5 rounded-full text-xs"
+                style={{ border: `1px solid ${COLORS.line}`, background: COLORS.card }}
               >
                 <option value="Tous">Toute météo</option>
                 {WEATHER_TAGS.map((w) => <option key={w} value={w}>{w}</option>)}
@@ -2155,8 +1809,8 @@ export default function App() {
               <select
                 value={outfitOccasionFilter}
                 onChange={(e) => setOutfitOccasionFilter(e.target.value)}
-                className="flex-shrink-0 px-4 rounded-full text-sm"
-                style={{ height: 36, border: `1px solid ${COLORS.line}`, background: "transparent" }}
+                className="px-3 py-1.5 rounded-full text-xs"
+                style={{ border: `1px solid ${COLORS.line}`, background: COLORS.card }}
               >
                 <option value="Tous">Toutes occasions</option>
                 {OCCASIONS.map((o) => <option key={o} value={o}>{o}</option>)}
@@ -2164,45 +1818,52 @@ export default function App() {
             </div>
 
             {visibleOutfits.length === 0 ? (
-              <p className="text-sm py-10 text-center" style={{ color: COLORS.muted }}>
-                {favoritesOnly ? "Aucun favori" : "Aucune tenue"}
+              <p className="text-sm py-6 text-center" style={{ opacity: 0.5 }}>
+                {favoritesOnly ? "Aucune tenue favorite pour l'instant." : "Aucune tenue enregistrée pour l'instant."}
               </p>
             ) : (
-              <div>
+              <div className="space-y-3">
                 {visibleOutfits.map((outfit) => (
-                  <div key={outfit.id} onClick={() => setDetailOutfitId(outfit.id)} className="relative mb-7 cursor-pointer">
-                    <div className="flex items-center pr-16 mb-2">
-                      <p className="text-sm font-medium" style={{ color: COLORS.rose }}>{outfit.name}</p>
-                    </div>
-                    <div className="absolute top-0 right-0 flex gap-1">
-                      <button onClick={(e) => { e.stopPropagation(); toggleFavoriteOutfit(outfit.id); }} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                  <div
+                    key={outfit.id}
+                    onClick={() => setDetailOutfitId(outfit.id)}
+                    className="rounded-lg p-4 relative cursor-pointer"
+                    style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}
+                  >
+                    <div className="absolute top-3 right-3 flex gap-1">
+                      <button onClick={(e) => { e.stopPropagation(); toggleFavoriteOutfit(outfit.id); }} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
                         <Heart size={13} color={outfit.favorite ? COLORS.rose : COLORS.ink} fill={outfit.favorite ? COLORS.rose : "none"} />
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); askConfirm("Supprimer cette tenue ?", () => removeOutfit(outfit.id)); }} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                      <button onClick={(e) => { e.stopPropagation(); removeOutfit(outfit.id); }} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
                         <X size={14} />
                       </button>
                     </div>
+                    <p className="text-sm font-medium mb-3 pr-16">{outfit.name}</p>
                     <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-3">
                       {itemsForOutfit(outfit).map((item) => (
-                        <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
+                        <div key={item.id} className="rounded-lg overflow-hidden" style={{ background: COLORS.ivory, border: `1px solid ${COLORS.line}` }}>
                           {item.photo ? (
-                            <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                            <img src={item.photo} alt={item.name} style={{ width: "100%", height: 64, objectFit: "cover" }} />
                           ) : (
-                            <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
+                            <div style={{ background: item.hex, height: 64 }} />
                           )}
+                          <div className="px-1.5 py-1">
+                            <p className="text-[10px] font-medium truncate">{item.name}</p>
+                            <p className="text-[9px]" style={{ color: COLORS.muted }}>{item.category}</p>
+                          </div>
                         </div>
                       ))}
                     </div>
                     <div className="flex items-center justify-between flex-wrap gap-2">
-                      <p className="text-xs" style={{ color: COLORS.muted }}>
+                      <p className="text-[11px]" style={{ opacity: 0.5 }}>
                         {(outfit.wornDates || []).length === 0 ? "Jamais portée" : `Portée ${(outfit.wornDates || []).length}x · dernière : ${formatDate(outfit.wornDates[outfit.wornDates.length - 1])}`}
                       </p>
                       <button
                         onClick={(e) => { e.stopPropagation(); isWornToday(outfit) ? unmarkOutfitWorn(outfit) : markOutfitWorn(outfit); }}
-                        className="text-xs px-3 py-1.5 rounded-full flex-shrink-0"
+                        className="text-[11px] px-2 py-1 rounded-full"
                         style={
                           isWornToday(outfit)
-                            ? { background: COLORS.rose, color: "white" }
+                            ? { background: COLORS.rose, color: "white", border: `1px solid ${COLORS.rose}` }
                             : { border: `1px solid ${COLORS.gold}`, color: COLORS.gold }
                         }
                       >
@@ -2238,18 +1899,20 @@ export default function App() {
 
                   <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-5">
                     {itemsForOutfit(outfit).map((item) => (
-                      <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
+                      <div key={item.id} className="rounded-lg overflow-hidden" style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}>
                         {item.photo ? (
-                          <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                          <img src={item.photo} alt={item.name} style={{ width: "100%", height: 70, objectFit: "cover" }} />
                         ) : (
-                          <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
+                          <div style={{ background: item.hex, height: 70 }} />
                         )}
+                        <p className="text-[10px] px-1.5 py-1 truncate">{item.name}</p>
                       </div>
                     ))}
                   </div>
 
                   {/* Saisons */}
                   <div className="mb-5">
+                    <p className="text-xs font-medium mb-2" style={{ opacity: 0.6 }}>Saison{(outfit.seasons || []).length > 1 ? "s" : ""}</p>
                     <div className="flex gap-1.5 flex-wrap">
                       {SEASONS.map((s) => {
                         const active = (outfit.seasons || []).includes(s);
@@ -2269,6 +1932,7 @@ export default function App() {
 
                   {/* Météo */}
                   <div className="mb-5">
+                    <p className="text-xs font-medium mb-2" style={{ opacity: 0.6 }}>Météo adaptée</p>
                     <div className="flex gap-1.5 flex-wrap">
                       {WEATHER_TAGS.map((w) => {
                         const active = (outfit.weather || []).includes(w);
@@ -2288,6 +1952,7 @@ export default function App() {
 
                   {/* Occasion */}
                   <div className="mb-5">
+                    <p className="text-xs font-medium mb-2" style={{ opacity: 0.6 }}>Occasion{(outfit.occasions || []).length > 1 ? "s" : ""}</p>
                     <div className="flex gap-1.5 flex-wrap">
                       {OCCASIONS.map((o2) => {
                         const active = (outfit.occasions || []).includes(o2);
@@ -2310,11 +1975,11 @@ export default function App() {
                     <div className="flex items-center gap-1.5 mb-2">
                       <Clock size={13} style={{ opacity: 0.6 }} />
                       <p className="text-xs font-medium" style={{ opacity: 0.6 }}>
-                        {(outfit.wornDates || []).length === 0 ? "Jamais portée" : `Portée ${(outfit.wornDates || []).length} fois`}
+                        Portée {(outfit.wornDates || []).length} fois
                       </p>
                     </div>
                     {(outfit.wornDates || []).length === 0 ? (
-                      null
+                      <p className="text-xs" style={{ opacity: 0.5 }}>Pas encore portée.</p>
                     ) : (
                       <p className="text-xs" style={{ opacity: 0.7 }}>
                         Dernière fois : {formatDate(outfit.wornDates[outfit.wornDates.length - 1])}
@@ -2334,7 +1999,7 @@ export default function App() {
                     >
                       {validated ? "Portée aujourd'hui ✓" : "Portée aujourd'hui"}
                     </button>
-                    <button onClick={() => askConfirm("Supprimer cette tenue ?", () => { removeOutfit(outfit.id); setDetailOutfitId(null); })} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs" style={{ border: "1px solid #C4808C", color: "#C4808C" }}>
+                    <button onClick={() => { removeOutfit(outfit.id); setDetailOutfitId(null); }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs" style={{ border: "1px solid #C4808C", color: "#C4808C" }}>
                       <X size={13} /> Supprimer cette tenue
                     </button>
                   </div>
@@ -2348,43 +2013,40 @@ export default function App() {
         {/* ══════════════════ VUE AGENDA ══════════════════ */}
         {view === "agenda" && (
           <div key={view} className={slideDir === "right" ? "slide-right" : "slide-left"}>
-            <h1 className="display text-3xl mb-6" style={{ fontWeight: 700 }}>Agenda</h1>
-
-            {items.length === 0 && (
-              <p className="text-sm mb-5" style={{ color: COLORS.muted }}>Ajoute d'abord des vêtements.</p>
-            )}
-
-            {items.length > 0 && (
+            {items.length === 0 ? (
+              <p className="text-xs py-3" style={{ opacity: 0.5 }}>
+                Ajoute d'abord des vêtements dans l'onglet "Garde-robe" pour pouvoir planifier une tenue ici.
+              </p>
+            ) : (
               <button
                 type="button"
                 onClick={() => openQuickPlan(todayKey())}
-                aria-label="Planifier une tenue"
-                className="flex items-center justify-center rounded-full text-white"
-                style={{ position: "fixed", right: 20, bottom: 84, width: 56, height: 56, background: COLORS.rose, boxShadow: "0 6px 18px rgba(255,75,51,0.35)", zIndex: 30 }}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm text-white mb-5"
+                style={{ background: COLORS.rose }}
               >
-                <Plus size={24} />
+                <Plus size={16} /> Planifier une tenue
               </button>
             )}
 
             {/* ── Calendrier ── */}
-            <div className="p-4 rounded-2xl mb-6" style={{ background: COLORS.haze }}>
+            <div className="p-3 rounded-lg mb-5" style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}>
               <div className="flex items-center justify-between mb-2">
                 <button
                   onClick={() => setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}
-                  className="w-7 h-7 rounded-full flex items-center justify-center"
-                  style={{ background: COLORS.ivory }}
+                  className="w-6 h-6 rounded-full flex items-center justify-center"
+                  style={{ background: "rgba(0,0,0,0.06)" }}
                 >
-                  <ArrowLeft size={13} />
+                  <ArrowLeft size={12} />
                 </button>
-                <p className="display text-sm" style={{ fontWeight: 700, textTransform: "capitalize" }}>
+                <p className="text-xs font-medium" style={{ textTransform: "capitalize" }}>
                   {calendarMonth.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
                 </p>
                 <button
                   onClick={() => setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}
-                  className="w-7 h-7 rounded-full flex items-center justify-center"
-                  style={{ background: COLORS.ivory }}
+                  className="w-6 h-6 rounded-full flex items-center justify-center"
+                  style={{ background: "rgba(0,0,0,0.06)" }}
                 >
-                  <ArrowLeft size={13} style={{ transform: "rotate(180deg)" }} />
+                  <ArrowLeft size={12} style={{ transform: "rotate(180deg)" }} />
                 </button>
               </div>
 
@@ -2423,60 +2085,63 @@ export default function App() {
               </div>
             </div>
 
-            {/* ── Une rangée par mois, qui défile sur le côté (comme la Garde-robe) ── */}
-            <div className="flex flex-col gap-7">
-              {agendaMonthGroups.map((group) => (
-                <section key={group.key}>
-                  <h2 className="text-base mb-3" style={{ fontWeight: 600 }}>
-                    {formatMonthLabel(group.key)}{" "}
-                    <span style={{ fontWeight: 400, color: COLORS.muted }}>· {group.entries.length}</span>
-                  </h2>
-                  <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2.5 overflow-x-auto">
-                    {group.entries.map((entry) => {
-                      const isPast = entry.dateStr < todayKey();
-                      const isToday = entry.dateStr === todayKey();
-                      const shown = entry.planItems.slice(0, 4);
-                      return (
-                        <button
-                          key={entry.entryId}
-                          type="button"
-                          onClick={() => setDayViewDate(entry.dateStr)}
-                          aria-label={`${formatShortDate(entry.dateStr)} — ${entry.label}`}
-                          className="flex-shrink-0 text-left"
-                          style={{ width: 104, opacity: isPast ? 0.55 : 1 }}
-                        >
-                          <div
-                            className="rounded-2xl overflow-hidden"
-                            style={{
-                              width: 104,
-                              height: 104,
-                              background: COLORS.haze,
-                              display: "grid",
-                              gridTemplateColumns: shown.length > 1 ? "1fr 1fr" : "1fr",
-                              gridTemplateRows: shown.length > 2 ? "1fr 1fr" : "1fr",
-                              gap: shown.length > 1 ? 2 : 0,
-                              outline: isToday ? `2px solid ${COLORS.rose}` : "none",
-                              outlineOffset: 2,
-                            }}
-                          >
-                            {shown.map((item) => (
-                              item.photo ? (
-                                <img key={item.id} src={item.photo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                              ) : (
-                                <div key={item.id} style={{ background: item.hex, width: "100%", height: "100%" }} />
-                              )
-                            ))}
+            {upcomingEntries.length > 0 && (
+              <div className="mb-4">
+                <p className="text-xs font-medium mb-2" style={{ opacity: 0.6 }}>À venir</p>
+                <div className="space-y-2">
+                  {upcomingEntries.map((entry) => (
+                    <div key={entry.entryId} className="flex items-center gap-3 p-3 rounded-lg" style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}>
+                      <div className="flex gap-1">
+                        {entry.planItems.slice(0, 4).map((item) => (
+                          <div key={item.id} className="rounded overflow-hidden" style={{ background: item.hex, width: 28, height: 28, border: `1px solid ${COLORS.line}` }}>
+                            {item.photo && <img src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
                           </div>
-                          <p className="text-xs mt-1.5" style={{ color: isToday ? COLORS.rose : COLORS.muted, fontWeight: isToday ? 600 : 400 }}>
-                            {formatShortDate(entry.dateStr)}
-                          </p>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </section>
-              ))}
-            </div>
+                        ))}
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">
+                          {entry.dateStr === todayKey() ? "Aujourd'hui" : formatAgendaDate(entry.dateStr)} — {entry.label}
+                        </p>
+                        <p className="text-xs" style={{ color: COLORS.muted }}>
+                          {entry.planItems.map((i) => i.name).join(", ")}
+                        </p>
+                      </div>
+                      <button onClick={() => removeAgendaEntry(entry.dateStr, entry.entryId)} className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {pastEntries.length > 0 && (
+              <div>
+                <p className="text-xs font-medium mb-2" style={{ opacity: 0.6 }}>Passées</p>
+                <div className="space-y-2">
+                  {pastEntries.map((entry) => (
+                    <div key={entry.entryId} className="flex items-center gap-3 p-3 rounded-lg" style={{ background: COLORS.card, border: `1px solid ${COLORS.line}`, opacity: 0.6 }}>
+                      <div className="flex gap-1">
+                        {entry.planItems.slice(0, 4).map((item) => (
+                          <div key={item.id} className="rounded overflow-hidden" style={{ background: item.hex, width: 28, height: 28, border: `1px solid ${COLORS.line}` }}>
+                            {item.photo && <img src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">{formatAgendaDate(entry.dateStr)} — {entry.label}</p>
+                        <p className="text-xs" style={{ color: COLORS.muted }}>
+                          {entry.planItems.map((i) => i.name).join(", ")}
+                        </p>
+                      </div>
+                      <button onClick={() => removeAgendaEntry(entry.dateStr, entry.entryId)} className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* ── Popup "jour" : détail d'une date cliquée dans le calendrier, avec glissement entre jours ── */}
             {dayViewDate && (() => {
@@ -2501,31 +2166,21 @@ export default function App() {
                     </div>
 
                     {dayEntries.length === 0 ? (
-                      <p className="text-xs py-4 text-center" style={{ opacity: 0.5 }}>Rien de prévu</p>
+                      <p className="text-xs py-4 text-center" style={{ opacity: 0.5 }}>Rien de prévu ce jour-là.</p>
                     ) : (
                       <div className="space-y-3 mb-4">
                         {dayEntries.map((entry) => (
                           <div key={entry.entryId}>
-                            <div className="flex items-center justify-between mb-2">
-                              <p className="text-xs font-medium" style={{ color: COLORS.rose }}>{entry.label}</p>
-                              <button
-                                type="button"
-                                onClick={() => askConfirm("Supprimer cette tenue prévue ?", () => removeAgendaEntry(entry.dateStr, entry.entryId))}
-                                aria-label="Supprimer cette tenue prévue"
-                                className="w-7 h-7 rounded-full flex items-center justify-center"
-                                style={{ background: COLORS.haze }}
-                              >
-                                <X size={13} />
-                              </button>
-                            </div>
+                            <p className="text-xs font-medium mb-2" style={{ color: COLORS.rose }}>{entry.label}</p>
                             <div className="grid grid-cols-3 gap-2">
                               {entry.planItems.map((item) => (
-                                <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
+                                <div key={item.id} className="rounded-lg overflow-hidden" style={{ background: COLORS.ivory, border: `1px solid ${COLORS.line}` }}>
                                   {item.photo ? (
-                                    <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                                    <img src={item.photo} alt={item.name} style={{ width: "100%", height: 50, objectFit: "cover" }} />
                                   ) : (
-                                    <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
+                                    <div style={{ background: item.hex, height: 50 }} />
                                   )}
+                                  <p className="text-[10px] px-1 py-0.5 truncate">{item.name}</p>
                                 </div>
                               ))}
                             </div>
@@ -2547,40 +2202,6 @@ export default function App() {
             })()}
           </div>
         )}
-            {/* ── Popup de confirmation avant suppression — globale ── */}
-            {confirmDialog && (
-              <div
-                onClick={() => setConfirmDialog(null)}
-                className="fixed inset-0 flex items-center justify-center p-5"
-                style={{ background: "rgba(0,0,0,0.4)", zIndex: 60 }}
-              >
-                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-xs rounded-2xl p-5 text-center" style={{ background: "#FFFFFF" }}>
-                  <div className="w-11 h-11 rounded-full mx-auto mb-3 flex items-center justify-center" style={{ background: "#FDE8E5" }}>
-                    <X size={18} color="#C4808C" />
-                  </div>
-                  <p className="display mb-5" style={{ fontWeight: 700, fontSize: 17 }}>{confirmDialog.message}</p>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDialog(null)}
-                      className="flex-1 px-4 py-2.5 rounded-full text-sm"
-                      style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}
-                    >
-                      Annuler
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}
-                      className="flex-1 px-4 py-2.5 rounded-full text-sm text-white"
-                      style={{ background: "#C4808C" }}
-                    >
-                      Supprimer
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
             {/* ── Popup du générateur, en étapes — globale, accessible depuis n'importe quel onglet ── */}
             {showWizard && (() => {
               const step = WIZARD_STEPS[wizardStep];
@@ -2599,20 +2220,15 @@ export default function App() {
                         <X size={14} />
                       </button>
                     </div>
-                    {!wizardGenerating && !wizardShowResult ? (
-                      <div className="flex gap-1.5 mb-4" aria-label={`Étape ${wizardStep + 1} sur ${WIZARD_STEPS.length}`}>
-                        {WIZARD_STEPS.map((st, idx) => (
-                          <span key={st} style={{ width: idx === wizardStep ? 18 : 6, height: 6, borderRadius: 3, background: idx <= wizardStep ? COLORS.rose : COLORS.line, transition: "width 0.2s" }} />
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="mb-4" />
-                    )}
+                    <p className="text-xs mb-4" style={{ opacity: 0.5 }}>
+                      {wizardGenerating ? "Composition en cours…" : wizardShowResult ? "Voici ta tenue" : `Étape ${wizardStep + 1} sur ${WIZARD_STEPS.length}`}
+                    </p>
 
                     {/* ── Écran de chargement ── */}
                     {wizardGenerating && (
                       <div className="py-10 flex flex-col items-center justify-center">
                         <Sparkles size={28} color={COLORS.rose} className="wizard-spin" />
+                        <p className="text-xs mt-3" style={{ opacity: 0.5 }}>On assemble ta tenue idéale…</p>
                       </div>
                     )}
 
@@ -2624,26 +2240,26 @@ export default function App() {
                             const item = items.find((i) => i.id === id);
                             if (!item) return null;
                             return (
-                              <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
+                              <div key={item.id} className="rounded-lg overflow-hidden" style={{ background: COLORS.ivory, border: `1px solid ${COLORS.line}` }}>
                                 {item.photo ? (
-                                  <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                                  <img src={item.photo} alt={item.name} style={{ width: "100%", height: 60, objectFit: "cover" }} />
                                 ) : (
-                                  <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
+                                  <div style={{ background: item.hex, height: 60 }} />
                                 )}
+                                <p className="text-[10px] px-1.5 py-1 truncate">{item.name}</p>
                               </div>
                             );
                           })}
                         </div>
 
+                        <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Nom de la tenue</label>
                         <input
                           value={outfitName}
                           onChange={(e) => setOutfitName(e.target.value)}
-                          placeholder="Nom de la tenue"
+                          placeholder="Ex : Look bureau lundi"
                           className="w-full px-3 py-2 rounded text-sm mb-3"
                           style={{ border: `1px solid ${COLORS.line}`, outline: "none" }}
                         />
-
-                        {!wizardTargetDate && renderOutfitTagPicker()}
 
                         <div className="flex gap-2">
                           <button onClick={wizardGenerate} className="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm" style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}>
@@ -2664,14 +2280,12 @@ export default function App() {
                     {/* ── Questions, une étape à la fois ── */}
                     {!wizardGenerating && !wizardShowResult && (
                       <>
-                    {step === "piece" && !WIZARD_STEPS.includes("meteo") && currentWeather && weather && (
-                      <p className="text-xs mb-3 px-3 py-2 rounded-full inline-flex items-center gap-1.5" style={{ background: "#F3F2EF" }}>
-                        <Sun size={13} /> {currentWeather} · {weather.min}° / {weather.max}°
-                      </p>
-                    )}
                     {step === "piece" && (
                       <div className="mb-4">
-                        <p className="text-sm font-medium mb-3">Une pièce en tête ?</p>
+                        <p className="text-sm font-medium mb-2">Une pièce en tête ?</p>
+                        <p className="text-xs mb-3" style={{ opacity: 0.6 }}>
+                          Choisis un vêtement que tu veux absolument porter, et on construit la tenue autour — ou passe cette étape pour une suggestion 100% surprise.
+                        </p>
                         <select
                           value={wizardPickerFilter}
                           onChange={(e) => setWizardPickerFilter(e.target.value)}
@@ -2694,9 +2308,10 @@ export default function App() {
                                   className="rounded-lg overflow-hidden text-left"
                                   style={{ border: `2px solid ${active ? COLORS.rose : COLORS.line}`, opacity: active ? 1 : 0.75 }}
                                 >
-                                  <div style={{ background: item.hex, aspectRatio: "1 / 1", overflow: "hidden" }}>
+                                  <div style={{ background: item.hex, height: 44, overflow: "hidden" }}>
                                     {item.photo && <img src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
                                   </div>
+                                  <p className="text-[10px] px-1 py-0.5 truncate">{item.name}</p>
                                 </button>
                               );
                             })}
@@ -2746,7 +2361,7 @@ export default function App() {
 
                     {step === "couleur" && (
                       <div className="mb-4">
-                        <p className="text-sm font-medium mb-3">Quelles couleurs ?</p>
+                        <p className="text-sm font-medium mb-3">Plutôt quelle gamme de couleur ?</p>
                         <div className="flex gap-1.5 flex-wrap">
                           {COLOR_FAMILIES.map((c) => {
                             const active = genColorFamily === c;
@@ -2906,17 +2521,22 @@ export default function App() {
                         className="w-full text-left p-3 rounded-lg text-sm"
                         style={{ border: `1px solid ${COLORS.line}`, opacity: outfits.length === 0 ? 0.4 : 1 }}
                       >
-                        <p className="font-medium">Une de mes tenues</p>
+                        <p className="font-medium">Choisir une tenue déjà enregistrée</p>
+                        <p className="text-xs" style={{ color: COLORS.muted }}>
+                          {outfits.length === 0 ? "Aucune tenue enregistrée pour l'instant" : "Parmi celles que tu as créées dans l'onglet Tenues"}
+                        </p>
                       </button>
                       <button onClick={() => setQuickPlanMode("create")} className="w-full text-left p-3 rounded-lg text-sm" style={{ border: `1px solid ${COLORS.line}` }}>
                         <p className="font-medium">Créer une tenue</p>
+                        <p className="text-xs" style={{ color: COLORS.muted }}>Choisis les vêtements toi-même</p>
                       </button>
                       <button
                         onClick={() => { setShowQuickPlanModal(false); openWizard(planDate); }}
                         className="w-full text-left p-3 rounded-lg text-sm"
                         style={{ border: `1px solid ${COLORS.gold}` }}
                       >
-                        <p className="font-medium flex items-center gap-1.5" style={{ color: COLORS.gold }}><Sparkles size={14} /> Générer une tenue</p>
+                        <p className="font-medium" style={{ color: COLORS.gold }}>Générer une tenue</p>
+                        <p className="text-xs" style={{ color: COLORS.muted }}>Le générateur te pose quelques questions et propose une tenue</p>
                       </button>
                     </div>
                   )}
@@ -2986,14 +2606,16 @@ export default function App() {
                   {/* Étape 2b : sélection manuelle des vêtements */}
                   {quickPlanMode === "create" && (
                     <>
+                      <label className="block text-xs mb-1" style={{ opacity: 0.6 }}>Nom (optionnel)</label>
                       <input
                         value={planLabel}
                         onChange={(e) => setPlanLabel(e.target.value)}
-                        placeholder="Nom (optionnel)"
+                        placeholder="Ex : Soir"
                         className="w-full px-3 py-2 rounded text-sm mb-3"
                         style={{ border: `1px solid ${COLORS.line}`, outline: "none" }}
                       />
 
+                      <p className="text-xs mb-2" style={{ opacity: 0.6 }}>Choisis les vêtements</p>
                       <select
                         value={agendaPickerFilter}
                         onChange={(e) => setAgendaPickerFilter(e.target.value)}
@@ -3016,9 +2638,10 @@ export default function App() {
                                 className="rounded-lg overflow-hidden text-left"
                                 style={{ border: `2px solid ${isSelected ? COLORS.rose : COLORS.line}`, opacity: isSelected ? 1 : 0.7 }}
                               >
-                                <div style={{ background: item.hex, aspectRatio: "1 / 1", overflow: "hidden" }}>
+                                <div style={{ background: item.hex, height: 44, overflow: "hidden" }}>
                                   {item.photo && <img src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
                                 </div>
+                                <p className="text-[10px] px-1.5 py-1 truncate">{item.name}</p>
                               </button>
                             );
                           })}
@@ -3030,7 +2653,7 @@ export default function App() {
                           checked={alsoSaveOutfit}
                           onChange={(e) => setAlsoSaveOutfit(e.target.checked)}
                         />
-                        Garder aussi dans mes tenues
+                        Aussi l'ajouter à ma collection de tenues
                       </label>
 
                       <button
