@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Plus, X, Shirt, Layers, Sparkles, Camera, Home, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Cloud, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
+import { Plus, X, Check, Shirt, Layers, Sparkles, Camera, Home, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Cloud, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
 import Cropper from "react-easy-crop";
 import { supabase } from "./supabaseClient";
 
@@ -620,6 +620,16 @@ export default function App() {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]));
   }
 
+  // Prochain nom automatique : "Tenue 1", "Tenue 2"… On part du plus grand numéro
+  // déjà utilisé, pour ne jamais créer deux fois le même nom après une suppression.
+  function nextOutfitName() {
+    const numbers = outfits
+      .map((o) => /^Tenue (\d+)$/.exec((o.name || "").trim()))
+      .filter(Boolean)
+      .map((m) => Number(m[1]));
+    return `Tenue ${numbers.length ? Math.max(...numbers) + 1 : 1}`;
+  }
+
   // Logique d'enregistrement d'une tenue, réutilisable depuis le formulaire
   // classique ET depuis la popup du générateur.
   function commitOutfit() {
@@ -761,12 +771,32 @@ export default function App() {
   // Contrôle l'écran de "composition" puis le résultat affiché dans la popup.
   const [wizardGenerating, setWizardGenerating] = useState(false);
   const [wizardShowResult, setWizardShowResult] = useState(false);
+  // Retouche de la tenue générée : null = fermé, un nombre = on remplace la pièce
+  // à cette position, "add" = on ajoute une pièce.
+  const [wizardSwap, setWizardSwap] = useState(null);
+  const [wizardAddFilter, setWizardAddFilter] = useState("Tous");
+
+  // Remplace la pièce en position "index" par une autre, ou l'ajoute à la fin.
+  function pickWizardItem(itemId) {
+    if (wizardSwap === "add") {
+      setSelectedIds((prev) => [...prev, itemId]);
+    } else {
+      setSelectedIds((prev) => prev.map((id, i) => (i === wizardSwap ? itemId : id)));
+    }
+    setWizardSwap(null);
+  }
+
+  function removeWizardItem(index) {
+    setSelectedIds((prev) => prev.filter((_, i) => i !== index));
+    setWizardSwap(null);
+  }
 
   // Si non-null, le résultat du générateur sera planifié à cette date au lieu
   // d'être simplement ajouté aux tenues (utilisé depuis la popup rapide de Profil).
   const [wizardTargetDate, setWizardTargetDate] = useState(null);
 
   function openWizard(targetDate) {
+    setWizardSwap(null);
     const autoTag = weatherToTag(weather);
     if (autoTag) setCurrentWeather(autoTag);
     setWizardSteps(autoTag
@@ -799,7 +829,9 @@ export default function App() {
 
   // Pioche un vêtement dans une catégorie, en tenant compte de tous les critères choisis
   // et de la pièce en tête si une a été choisie.
-  function randomFrom(category, colorAnchor) {
+  // "optional" : pour les pièces facultatives (couche, veste, accessoire). Si aucune
+  // ne respecte la palette de couleurs, on préfère ne rien ajouter plutôt que de casser l'harmonie.
+  function randomFrom(category, colorAnchor, optional = false) {
     const baseItem = wizardBaseItemId ? items.find((i) => i.id === wizardBaseItemId) : null;
     if (baseItem && baseItem.category === category) return baseItem; // la pièce en tête est toujours incluse
 
@@ -821,17 +853,22 @@ export default function App() {
       if (filtered.length > 0) pool = filtered;
     }
     if (genColorFamily) {
-      // Un critère couleur choisi explicitement dans le questionnaire est prioritaire sur tout.
-      const filtered = pool.filter((i) => hexToColorFamily(i.hex) === genColorFamily);
-      if (filtered.length > 0) pool = filtered;
+      // Famille choisie dans le questionnaire : d'abord cette famille, sinon du neutre
+      // (noir, blanc, beige… qui vont avec tout). Jamais une autre couleur à la place.
+      const same = pool.filter((i) => hexToColorFamily(i.hex) === genColorFamily);
+      const neutral = pool.filter((i) => hexToColorFamily(i.hex) === "Neutres");
+      if (same.length > 0) pool = same;
+      else if (neutral.length > 0) pool = neutral;
+      else if (optional) return undefined;
     } else if (colorAnchor) {
-      // Sans choix explicite, on garde la cohérence avec la première pièce de la tenue :
-      // soit la même famille de couleur, soit du neutre (qui va avec tout).
+      // Sans choix explicite, on garde la cohérence avec la première pièce colorée :
+      // soit la même famille de couleur, soit du neutre.
       const filtered = pool.filter((i) => {
         const fam = hexToColorFamily(i.hex);
         return fam === colorAnchor || fam === "Neutres";
       });
       if (filtered.length > 0) pool = filtered;
+      else if (optional) return undefined;
     }
 
     // Préférence : plutôt des habitués, ou plutôt des vêtements délaissés qu'on "ose" ressortir.
@@ -849,47 +886,81 @@ export default function App() {
   function suggestOutfit() {
     const baseItem = wizardBaseItemId ? items.find((i) => i.id === wizardBaseItemId) : null;
 
-    // "L'ancre couleur" : la famille de couleur de la toute première pièce choisie.
-    // Une fois connue, les pièces suivantes sont piochées en priorité dans cette même
-    // famille ou en neutre — pour éviter une tenue où chaque pièce jure avec les autres.
+    // "L'ancre couleur" : la famille de la première pièce COLORÉE choisie (une pièce
+    // neutre va avec tout, elle ne fixe donc pas la palette). Les pièces suivantes sont
+    // piochées dans cette même famille ou en neutre.
     let colorAnchor = null;
-    function pick(category) {
-      const item = randomFrom(category, colorAnchor);
-      if (item && !colorAnchor && !genColorFamily) colorAnchor = hexToColorFamily(item.hex);
+    function pick(category, optional = false) {
+      const item = randomFrom(category, colorAnchor, optional);
+      if (item && !colorAnchor && !genColorFamily) {
+        const fam = hexToColorFamily(item.hex);
+        if (fam !== "Neutres") colorAnchor = fam;
+      }
       return item;
     }
 
+    // Niveau de température du jour : "Chaud", "Frais", "Froid", ou null si inconnu.
+    // Par temps de pluie, on se base sur la température réelle si on la connaît.
+    const rainy = currentWeather === "Pluie";
+    let tempLevel = null;
+    if (currentWeather === "Chaud" || currentWeather === "Frais" || currentWeather === "Froid") tempLevel = currentWeather;
+    else if (weather) tempLevel = weather.max >= 22 ? "Chaud" : weather.max >= 14 ? "Frais" : "Froid";
+    // Au-delà de 25 °C, plus de veste ni de chemise par-dessus.
+    const tooHot = weather ? weather.max > 25 : false;
+
     let base;
+    let isDress = false;
     if (baseItem && baseItem.category === "Robe") {
       base = [baseItem];
-      colorAnchor = hexToColorFamily(baseItem.hex);
+      isDress = true;
+      const fam = hexToColorFamily(baseItem.hex);
+      if (!genColorFamily && fam !== "Neutres") colorAnchor = fam;
     } else {
       // Une fois sur trois environ, on part sur une robe plutôt que haut + bas séparés
       // (si le dressing en contient au moins une, sinon on retombe sur haut + bas) —
       // sauf si la pièce en tête est justement un haut ou un bas, auquel cas on la respecte.
       const forceTopBottom = baseItem && (baseItem.category === "Haut" || baseItem.category === "Bas");
       const tryDress = !forceTopBottom && Math.random() < 0.33 && items.some((i) => i.category === "Robe");
+      isDress = tryDress;
       base = tryDress ? [pick("Robe")] : [pick("Haut"), pick("Bas")];
     }
 
     const picks = [...base, pick("Chaussures")];
     const forceInclude = (cat) => baseItem && baseItem.category === cat;
-    // Une couche par-dessus le haut : soit un pull, soit une chemise ouverte (jamais les deux).
-    // Une fois sur deux environ il n'y en a pas, sauf si la pièce en tête en est une.
-    const layer = forceInclude("Pull") ? "Pull"
-      : forceInclude("Chemise") ? "Chemise"
-      : Math.random() < 0.5 ? null
-      : Math.random() < 0.5 ? "Pull" : "Chemise";
+
+    // ── Couche par-dessus le haut (pull OU chemise ouverte), selon la température ──
+    //   Plus de 25 °C : aucune · 22-25 °C : parfois une chemise (pas de pull)
+    //   Frais : une fois sur deux environ · Froid : un pull
+    //   Avec une robe : seulement un pull, et seulement s'il fait froid.
+    //   Météo inconnue : une fois sur deux, comme avant.
+    let layer = null;
+    if (forceInclude("Pull")) layer = "Pull";
+    else if (forceInclude("Chemise")) layer = "Chemise";
+    else if (isDress) layer = tempLevel === "Froid" ? "Pull" : null;
+    else if (tempLevel === "Froid") layer = "Pull";
+    else if (tempLevel === "Chaud") layer = !tooHot && Math.random() < 0.5 ? "Chemise" : null;
+    else if (tempLevel === "Frais") layer = Math.random() < 0.6 ? (Math.random() < 0.5 ? "Pull" : "Chemise") : null;
+    else if (tempLevel === null) layer = Math.random() < 0.5 ? null : Math.random() < 0.5 ? "Pull" : "Chemise";
     if (layer) {
-      // Si la catégorie tirée est vide dans ton dressing, on essaie l'autre.
-      const layerItem = pick(layer) || (!baseItem ? pick(layer === "Pull" ? "Chemise" : "Pull") : undefined);
+      const forced = forceInclude(layer);
+      let layerItem = pick(layer, !forced);
+      // Si la catégorie tirée est vide (ou hors palette), on essaie l'autre — sauf avec une robe.
+      if (!layerItem && !forced && !isDress) layerItem = pick(layer === "Pull" ? "Chemise" : "Pull", true);
       if (layerItem) picks.push(layerItem);
     }
-    if (forceInclude("Veste") || Math.random() > 0.5) picks.push(pick("Veste"));
-    if (forceInclude("Accessoire") || Math.random() > 0.5) picks.push(pick("Accessoire"));
+
+    // ── Veste : jamais au-delà de 25 °C (sauf pluie), toujours quand il fait froid ou qu'il pleut ──
+    let wantJacket;
+    if (forceInclude("Veste") || rainy || tempLevel === "Froid" || tempLevel === "Frais") wantJacket = true; // toujours sous 22 °C
+    else if (tooHot) wantJacket = false;
+    else wantJacket = Math.random() < 0.5; // 22-25 °C, ou météo inconnue
+    if (wantJacket) picks.push(pick("Veste", !forceInclude("Veste")));
+
+    // ── Accessoire : une fois sur deux, s'il s'accorde aux couleurs ──
+    if (forceInclude("Accessoire") || Math.random() > 0.5) picks.push(pick("Accessoire", !forceInclude("Accessoire")));
     const found = picks.filter(Boolean);
     setSelectedIds(found.map((i) => i.id));
-    setOutfitName(found.length >= 2 ? "Tenue suggérée" : "");
+    setOutfitName(found.length >= 2 ? nextOutfitName() : "");
     // On pré-coche les tags de la tenue avec les critères utilisés pour la générer.
     setOutfitTags({ seasons: [], weather: currentWeather ? [currentWeather] : [], occasions: genOccasion ? [genOccasion] : [] });
   }
@@ -897,6 +968,7 @@ export default function App() {
   // Lance la génération avec les critères choisis, puis ferme la popup et ouvre
   // le formulaire de création pour que tu puisses ajuster et enregistrer.
   function wizardGenerate() {
+    setWizardSwap(null);
     setWizardGenerating(true);
     setWizardShowResult(false);
     // Petit délai volontaire, juste pour que la génération se "ressente"
@@ -929,6 +1001,7 @@ export default function App() {
     .filter((o) => outfitSeasonFilter === "Tous" || (o.seasons || []).includes(outfitSeasonFilter))
     .filter((o) => outfitWeatherFilter === "Tous" || (o.weather || []).includes(outfitWeatherFilter))
     .filter((o) => outfitOccasionFilter === "Tous" || (o.occasions || []).includes(outfitOccasionFilter))
+    // Les tenues les plus récentes en premier (l'id est la date de création).
     .sort((a, b) => b.id - a.id);
 
   // ── ACTIONS SUR L'AGENDA ─────────────────────
@@ -1042,7 +1115,7 @@ export default function App() {
   function saveAsReusableOutfit(itemIds, label, dateStr, entryId) {
     if (itemIds.length === 0) return;
     const newOutfitId = Date.now() + 1;
-    const newOutfit = { id: newOutfitId, name: label.trim() || "Tenue", itemIds, favorite: false, wornDates: [], seasons: [], weather: [], occasions: [] };
+    const newOutfit = { id: newOutfitId, name: label.trim() || nextOutfitName(), itemIds, favorite: false, wornDates: [], seasons: [], weather: [], occasions: [] };
     setOutfits((prev) => [...prev, newOutfit]);
 
     if (dateStr && entryId) {
@@ -2019,7 +2092,7 @@ export default function App() {
 
             <button
               type="button"
-              onClick={() => { setCreateOutfitStep("select"); setOutfitTags(EMPTY_OUTFIT_TAGS); setShowOutfitForm(true); }}
+              onClick={() => { setCreateOutfitStep("select"); setOutfitTags(EMPTY_OUTFIT_TAGS); setOutfitName(nextOutfitName()); setShowOutfitForm(true); }}
               aria-label="Créer une tenue"
               className="flex items-center justify-center rounded-full text-white"
               style={{ position: "fixed", right: 20, bottom: 84, width: 56, height: 56, background: COLORS.rose, boxShadow: "0 6px 18px rgba(255,75,51,0.35)", zIndex: 30 }}
@@ -2618,22 +2691,112 @@ export default function App() {
                     )}
 
                     {/* ── Écran de résultat : la tenue générée, prête à enregistrer ── */}
-                    {!wizardGenerating && wizardShowResult && (
+                    {/* ── Choix d'une pièce : remplacer (même catégorie) ou ajouter ── */}
+                    {!wizardGenerating && wizardShowResult && wizardSwap !== null && (() => {
+                      const current = wizardSwap === "add" ? null : items.find((i) => i.id === selectedIds[wizardSwap]);
+                      const category = current ? current.category : null;
+                      const candidates = items
+                        .filter((i) => !selectedIds.includes(i.id))
+                        .filter((i) => (category ? i.category === category : wizardAddFilter === "Tous" || i.category === wizardAddFilter))
+                        .sort(compareByColor);
+                      return (
+                        <div className="mb-4">
+                          <div className="flex items-center justify-between mb-3">
+                            <button type="button" onClick={() => setWizardSwap(null)} aria-label="Retour à la tenue" className="w-9 h-9 -ml-2 rounded-full flex items-center justify-center">
+                              <ArrowLeft size={18} />
+                            </button>
+                            <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>
+                              {category ? CATEGORY_PLURALS[category] || category : "Ajouter une pièce"}
+                            </p>
+                            <span className="w-9" />
+                          </div>
+
+                          {!category && (
+                            <div data-no-swipe className="no-scrollbar flex gap-2 overflow-x-auto mb-3">
+                              {["Tous", ...CATEGORIES].map((c) => {
+                                const active = wizardAddFilter === c;
+                                return (
+                                  <button
+                                    key={c}
+                                    type="button"
+                                    onClick={() => setWizardAddFilter(c)}
+                                    className="flex-shrink-0 px-3 rounded-full text-xs"
+                                    style={{ height: 32, background: active ? COLORS.ink : "transparent", color: active ? "white" : COLORS.ink, border: `1px solid ${active ? COLORS.ink : COLORS.line}` }}
+                                  >
+                                    {c === "Tous" ? "Tout" : CATEGORY_PLURALS[c] || c}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          {candidates.length === 0 ? (
+                            <p className="text-sm py-6 text-center" style={{ color: COLORS.muted }}>Aucune autre pièce</p>
+                          ) : (
+                            <div className="grid grid-cols-3 gap-2 mb-3">
+                              {candidates.map((item) => (
+                                <button key={item.id} type="button" onClick={() => pickWizardItem(item.id)} aria-label={item.name} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
+                                  {item.photo ? (
+                                    <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                                  ) : (
+                                    <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
+                                  )}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          {current && (
+                            <button type="button" onClick={() => removeWizardItem(wizardSwap)} className="w-full px-4 py-2 rounded-full text-sm" style={{ border: "1px solid #C4808C", color: "#C4808C" }}>
+                              Retirer cette pièce
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {!wizardGenerating && wizardShowResult && wizardSwap === null && (
                       <div className="mb-4">
                         <div className="grid grid-cols-3 gap-2 mb-4">
-                          {selectedIds.map((id) => {
+                          {selectedIds.map((id, index) => {
                             const item = items.find((i) => i.id === id);
                             if (!item) return null;
                             return (
-                              <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
-                                {item.photo ? (
-                                  <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
-                                ) : (
-                                  <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
-                                )}
+                              <div key={item.id} className="relative">
+                                <button
+                                  type="button"
+                                  onClick={() => setWizardSwap(index)}
+                                  aria-label={`Changer : ${item.name}`}
+                                  className="w-full rounded-xl overflow-hidden block"
+                                  style={{ background: COLORS.haze }}
+                                >
+                                  {item.photo ? (
+                                    <img src={item.photo} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                                  ) : (
+                                    <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => removeWizardItem(index)}
+                                  aria-label={`Retirer : ${item.name}`}
+                                  className="absolute w-6 h-6 rounded-full flex items-center justify-center"
+                                  style={{ top: 5, right: 5, background: "rgba(255,255,255,0.9)", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }}
+                                >
+                                  <X size={12} />
+                                </button>
                               </div>
                             );
                           })}
+                          <button
+                            type="button"
+                            onClick={() => { setWizardAddFilter("Tous"); setWizardSwap("add"); }}
+                            aria-label="Ajouter une pièce"
+                            className="rounded-xl flex items-center justify-center"
+                            style={{ aspectRatio: "1 / 1", border: `1.5px dashed ${COLORS.line}`, color: COLORS.muted }}
+                          >
+                            <Plus size={22} />
+                          </button>
                         </div>
 
                         <input
@@ -2652,9 +2815,9 @@ export default function App() {
                           </button>
                           <button
                             onClick={wizardSaveOutfit}
-                            disabled={!wizardTargetDate && !outfitName.trim()}
+                            disabled={selectedIds.length === 0 || (!wizardTargetDate && !outfitName.trim())}
                             className="flex-1 px-4 py-2 rounded-full text-sm text-white"
-                            style={{ background: COLORS.rose, opacity: (!wizardTargetDate && !outfitName.trim()) ? 0.4 : 1 }}
+                            style={{ background: COLORS.rose, opacity: (selectedIds.length === 0 || (!wizardTargetDate && !outfitName.trim())) ? 0.4 : 1 }}
                           >
                             {wizardTargetDate ? `Planifier pour ${wizardTargetDate === todayKey() ? "aujourd'hui" : "demain"}` : "Ajouter à mes tenues"}
                           </button>
@@ -2748,16 +2911,50 @@ export default function App() {
                     {step === "couleur" && (
                       <div className="mb-4">
                         <p className="text-sm font-medium mb-3">Quelles couleurs ?</p>
-                        <div className="flex gap-1.5 flex-wrap">
+                        <div className="flex flex-col gap-2">
                           {COLOR_FAMILIES.map((c) => {
                             const active = genColorFamily === c;
+                            // Les vêtements de cette famille, et un aperçu de leurs vraies couleurs.
+                            const familyItems = items.filter((i) => hexToColorFamily(i.hex) === c);
+                            const count = familyItems.length;
+                            const swatches = [...new Set([...familyItems].sort(compareByColor).map((i) => (i.hex || "").toLowerCase()))].filter(Boolean).slice(0, 5);
+                            const empty = count === 0;
                             return (
-                              <button type="button" key={c} onClick={() => setGenColorFamily(active ? null : c)} className="px-3 py-1.5 rounded-full text-sm" style={{
-                                background: active ? COLORS.sage : "transparent",
-                                color: active ? "white" : COLORS.ink,
-                                border: `1px solid ${active ? COLORS.sage : COLORS.line}`,
-                              }}>
-                                {c}
+                              <button
+                                type="button"
+                                key={c}
+                                disabled={empty}
+                                onClick={() => setGenColorFamily(active ? null : c)}
+                                className="flex items-center justify-between gap-3 px-3.5 py-3 rounded-2xl text-left"
+                                style={{
+                                  border: active ? `2px solid ${COLORS.ink}` : empty ? "1px dashed #DDDDDD" : `1px solid ${COLORS.line}`,
+                                  opacity: empty ? 0.5 : 1,
+                                  background: "#FFFFFF",
+                                }}
+                              >
+                                <span className="flex flex-col">
+                                  <span className="text-sm" style={{ fontWeight: 600 }}>{c}</span>
+                                  <span className="text-xs" style={{ color: COLORS.muted }}>{count} pièce{count > 1 ? "s" : ""}</span>
+                                </span>
+                                <span className="flex items-center gap-2.5">
+                                  {empty ? (
+                                    <span className="text-xs" style={{ color: "#B5B5B5" }}>aucune pièce</span>
+                                  ) : (
+                                    <span className="flex" style={{ paddingLeft: 6 }}>
+                                      {swatches.map((hex) => (
+                                        <span
+                                          key={hex}
+                                          style={{ width: 22, height: 22, borderRadius: 6, background: hex, border: "1px solid rgba(0,0,0,0.08)", marginLeft: -6, boxShadow: "0 0 0 2px #FFFFFF" }}
+                                        />
+                                      ))}
+                                    </span>
+                                  )}
+                                  {active && (
+                                    <span className="w-5 h-5 rounded-full flex items-center justify-center" style={{ background: COLORS.ink }}>
+                                      <Check size={12} color="#FFFFFF" strokeWidth={3} />
+                                    </span>
+                                  )}
+                                </span>
                               </button>
                             );
                           })}
