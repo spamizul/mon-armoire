@@ -928,7 +928,8 @@ export default function App() {
     .filter((o) => !favoritesOnly || o.favorite)
     .filter((o) => outfitSeasonFilter === "Tous" || (o.seasons || []).includes(outfitSeasonFilter))
     .filter((o) => outfitWeatherFilter === "Tous" || (o.weather || []).includes(outfitWeatherFilter))
-    .filter((o) => outfitOccasionFilter === "Tous" || (o.occasions || []).includes(outfitOccasionFilter));
+    .filter((o) => outfitOccasionFilter === "Tous" || (o.occasions || []).includes(outfitOccasionFilter))
+    .sort((a, b) => b.id - a.id);
 
   // ── ACTIONS SUR L'AGENDA ─────────────────────
   // Date du jour au format "AAAA-MM-JJ", pour comparer facilement avec les clés de l'agenda.
