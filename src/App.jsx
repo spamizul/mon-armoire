@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Plus, X, Shirt, Layers, Sparkles, Camera, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Cloud, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
+import { Plus, X, Pencil, Shirt, Layers, Sparkles, Camera, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Cloud, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
 import Cropper from "react-easy-crop";
 import { supabase } from "./supabaseClient";
 
@@ -721,6 +721,31 @@ export default function App() {
     );
   }
 
+  // Titre modifiable directement (nom d'un vêtement ou d'une tenue) : on touche, on tape.
+  // Un petit crayon indique qu'on peut le modifier ; un nom vide reprend l'ancien.
+  function renderEditableTitle(value, onSave, label) {
+    return (
+      <label className="flex items-center gap-2 flex-1 min-w-0 cursor-text">
+        <input
+          key={value}
+          defaultValue={value}
+          aria-label={label}
+          onBlur={(e) => {
+            e.target.style.borderBottomColor = "transparent";
+            const v = e.target.value.trim();
+            if (v && v !== value) onSave(v);
+            else e.target.value = value;
+          }}
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          className="display flex-1 min-w-0 text-xl outline-none"
+          style={{ fontWeight: 600, background: "transparent", borderBottom: "1px dashed transparent" }}
+          onFocus={(e) => { e.target.style.borderBottomColor = COLORS.line; }}
+        />
+        <Pencil size={15} style={{ opacity: 0.35, flexShrink: 0 }} />
+      </label>
+    );
+  }
+
   // Une vignette de vêtement : juste la photo (ou sa couleur s'il n'y en a pas),
   // avec un petit cœur si c'est un favori.
   function renderItemTile(item, sizeStyle) {
@@ -996,7 +1021,8 @@ export default function App() {
   // ne respecte la palette de couleurs, on préfère ne rien ajouter plutôt que de casser l'harmonie.
   // "prefOverride" : impose une préférence pour cette catégorie seulement
   // (sert à glisser une pièce phare dans une tenue "Oser du neuf").
-  function randomFrom(category, colorAnchor, optional = false, prefOverride) {
+  // "avoid" : pièces de la suggestion précédente, à éviter quand on régénère.
+  function randomFrom(category, colorAnchor, optional = false, prefOverride, avoid = new Set()) {
     const baseItem = wizardBaseItemId ? items.find((i) => i.id === wizardBaseItemId) : null;
     if (baseItem && effectiveCategory(baseItem) === category) return baseItem; // la pièce en tête est toujours incluse
 
@@ -1036,6 +1062,10 @@ export default function App() {
       else if (optional) return undefined;
     }
 
+    // Régénérer : on écarte la pièce proposée juste avant, s'il existe une autre possibilité.
+    const fresh = pool.filter((i) => !avoid.has(i.id));
+    if (fresh.length > 0) pool = fresh;
+
     // Préférence : plutôt des habitués, ou plutôt des vêtements délaissés qu'on "ose" ressortir.
     const pref = prefOverride !== undefined ? prefOverride : genPreference;
     if (pref === "souvent") {
@@ -1052,7 +1082,7 @@ export default function App() {
   // "Vêtements souvent portés" : cherche parmi tes tenues déjà enregistrées une qui
   // respecte les critères (pièce en tête, météo, occasion, couleurs), en privilégiant
   // les plus portées. Renvoie null si aucune ne convient.
-  function pickExistingOutfit(baseItem) {
+  function pickExistingOutfit(baseItem, avoid = new Set()) {
     let pool = outfits.filter((o) => {
       const pieces = itemsForOutfit(o);
       return pieces.length >= 2 && pieces.length === o.itemIds.length; // tenue complète (aucune pièce supprimée)
@@ -1061,6 +1091,8 @@ export default function App() {
     const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     pool = pool.filter((o) => !(o.wornDates || []).some((d) => new Date(d).getTime() > weekAgo));
     if (baseItem) pool = pool.filter((o) => o.itemIds.includes(baseItem.id));
+    // Régénérer : pas la même tenue que celle proposée juste avant.
+    pool = pool.filter((o) => !(o.itemIds.length > 0 && o.itemIds.every((id) => avoid.has(id))));
     if (currentWeather) pool = pool.filter((o) => (o.weather || []).includes(currentWeather));
     if (genOccasion) pool = pool.filter((o) => (o.occasions || []).includes(genOccasion));
     if (genColorFamily) {
@@ -1075,14 +1107,15 @@ export default function App() {
     return top[Math.floor(Math.random() * top.length)];
   }
 
-  function suggestOutfit() {
+  function suggestOutfit(avoidIds = []) {
+    const avoid = new Set(avoidIds);
     const baseItem = wizardBaseItemId ? items.find((i) => i.id === wizardBaseItemId) : null;
     setWizardFromOutfitId(null);
 
     // Habituée : environ 3 fois sur 10, on ressort une de tes tenues existantes (si une convient).
     // Le reste du temps, on compose une nouvelle tenue avec tes pièces les plus portées.
     if (genPreference === "souvent" && Math.random() < 0.3) {
-      const existing = pickExistingOutfit(baseItem);
+      const existing = pickExistingOutfit(baseItem, avoid);
       if (existing) {
         setSelectedIds(existing.itemIds);
         setOutfitName(existing.name);
@@ -1100,7 +1133,7 @@ export default function App() {
     // tout le reste en pièces peu portées. Pas besoin si tu as déjà choisi une pièce en tête.
     let starCat = null;
     function pick(category, optional = false) {
-      const item = randomFrom(category, colorAnchor, optional, category === starCat ? "souvent" : undefined);
+      const item = randomFrom(category, colorAnchor, optional, category === starCat ? "souvent" : undefined, avoid);
       if (item && !colorAnchor && !genColorFamily) {
         const fam = hexToColorFamily(item.hex);
         if (fam !== "Neutres") colorAnchor = fam;
@@ -1185,13 +1218,15 @@ export default function App() {
   // Lance la génération avec les critères choisis, puis ferme la popup et ouvre
   // le formulaire de création pour que tu puisses ajuster et enregistrer.
   function wizardGenerate() {
+    // Si une tenue est déjà affichée, c'est "Régénérer" : on évite de reproposer ses pièces.
+    const avoidIds = wizardShowResult ? selectedIds : [];
     setWizardSwap(null);
     setWizardGenerating(true);
     setWizardShowResult(false);
     // Petit délai volontaire, juste pour que la génération se "ressente"
     // plutôt que le résultat apparaisse d'un coup sec.
     setTimeout(() => {
-      suggestOutfit();
+      suggestOutfit(avoidIds);
       setWizardGenerating(false);
       setWizardShowResult(true);
     }, 700);
@@ -1805,12 +1840,12 @@ export default function App() {
                   </button>
                 </div>
                 {tomorrowEntries.map((entry) => (
-                  <div key={entry.entryId} className="mb-3">
+                  <div key={entry.entryId} className="mb-3 cursor-pointer" onClick={() => { setShowModalPicker(false); setOpenEntryId(entry.entryId); }}>
                     <div className="flex items-center justify-between mb-2">
                       <p className="text-xs font-medium" style={{ color: COLORS.rose }}>{entry.label}</p>
                       <button
                         type="button"
-                        onClick={() => askConfirm("Supprimer cette tenue prévue ?", () => removeAgendaEntry(entry.dateStr, entry.entryId))}
+                        onClick={(e) => { e.stopPropagation(); askConfirm("Supprimer cette tenue prévue ?", () => removeAgendaEntry(entry.dateStr, entry.entryId)); }}
                         aria-label="Supprimer cette tenue prévue"
                         className="w-6 h-6 rounded-full flex items-center justify-center"
                         style={{ background: "rgba(0,0,0,0.06)" }}
@@ -1905,14 +1940,24 @@ export default function App() {
                       </button>
                     )}
 
-                    <button
-                      onClick={() => { validateTodayPlan(entry); setOpenEntryId(null); }}
-                      disabled={validated}
-                      className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm"
-                      style={{ background: COLORS.rose, color: "white" }}
-                    >
-                      {validated ? "Tenue validée ✓" : "Oui, je porte cette tenue aujourd'hui"}
-                    </button>
+                    {entry.dateStr === todayKey() ? (
+                      <button
+                        onClick={() => { validateTodayPlan(entry); setOpenEntryId(null); }}
+                        disabled={validated}
+                        className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm"
+                        style={{ background: COLORS.rose, color: "white" }}
+                      >
+                        {validated ? "Tenue validée ✓" : "Oui, je porte cette tenue aujourd'hui"}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => setOpenEntryId(null)}
+                        className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm"
+                        style={{ background: COLORS.rose, color: "white" }}
+                      >
+                        C'est prêt
+                      </button>
+                    )}
 
                     <button
                       onClick={() => askConfirm("Supprimer cette tenue prévue ?", () => { removeAgendaEntry(entry.dateStr, entry.entryId); setOpenEntryId(null); })}
@@ -2183,7 +2228,7 @@ export default function App() {
                 </label>
               </div>
               <div className="p-4 flex items-center justify-between gap-3">
-                <p className="display text-xl" style={{ fontWeight: 600 }}>{detailItem.name}</p>
+                {renderEditableTitle(detailItem.name, (v) => setItems((prev) => prev.map((i) => (i.id === detailItem.id ? { ...i, name: v } : i))), "Nom du vêtement")}
                 <button
                   type="button"
                   onClick={() => toggleFavoriteItem(detailItem.id)}
@@ -2615,7 +2660,7 @@ export default function App() {
                   </button>
 
                   <div className="flex items-center justify-between mb-3">
-                    <p className="display text-xl" style={{ fontWeight: 600 }}>{outfit.name}</p>
+                    {renderEditableTitle(outfit.name, (v) => setOutfits((prev) => prev.map((o) => (o.id === outfit.id ? { ...o, name: v } : o))), "Nom de la tenue")}
                     <div className="flex gap-1">
                       <button onClick={() => toggleFavoriteOutfit(outfit.id)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
                         <Heart size={15} color={outfit.favorite ? COLORS.rose : COLORS.ink} fill={outfit.favorite ? COLORS.rose : "none"} />
