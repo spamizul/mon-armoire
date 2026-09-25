@@ -9,9 +9,10 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
+      includeAssets: ['apple-touch-icon.png'],
       manifest: {
-        name: 'Mon Armoire',
-        short_name: 'Mon Armoire',
+        name: 'pli',
+        short_name: 'pli',
         description: 'Ton dressing digital',
         theme_color: '#FF4B33',
         background_color: '#FFFFFF',
@@ -27,6 +28,12 @@ export default defineConfig({
             src: 'icon-512.png',
             sizes: '512x512',
             type: 'image/png',
+          },
+          {
+            src: 'icon-512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'maskable',
           },
         ],
       },

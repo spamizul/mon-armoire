@@ -214,6 +214,20 @@ const ALL_SORTS = [...CATEGORY_SORTS, { id: "mois", label: "Portées ce mois-ci"
 // à "tenues" glisse vers la gauche, l'inverse glisse vers la droite.
 const TAB_ORDER = ["accueil", "dressing", "tenues", "agenda"];
 
+// Logo "pli" : carré corail, "pli" en Merriweather italique, vague blanche en bas à droite.
+function PliLogo({ size = 72 }) {
+  return (
+    <svg viewBox="0 0 100 100" width={size} height={size} aria-label="pli" role="img">
+      <defs><clipPath id="pli-logo-clip"><rect width="100" height="100" rx="22.5" /></clipPath></defs>
+      <g clipPath="url(#pli-logo-clip)">
+        <rect width="100" height="100" fill="#FF4B33" />
+        <path transform="translate(100,0) scale(-1,1)" d="M-4 46 Q8 52 10 62 T26 74 T40 90 T54 104" fill="none" stroke="#FFFFFF" strokeWidth="5" strokeLinecap="round" />
+        <text x="44" y="52" textAnchor="middle" fill="#FFFFFF" style={{ fontFamily: "'Merriweather', serif", fontWeight: 700, fontStyle: "italic", fontSize: 40 }}>pli</text>
+      </g>
+    </svg>
+  );
+}
+
 // ── Synchro : outils ──
 // JSON avec les clés toujours dans le même ordre (Supabase les réordonne),
 // pour pouvoir comparer deux versions des données de façon fiable.
@@ -2003,13 +2017,13 @@ export default function App() {
       rediscoverHidden,
     };
     const stamp = new Date().toISOString().slice(0, 10);
-    const fileName = `mon-armoire-sauvegarde-${stamp}.json`;
+    const fileName = `pli-sauvegarde-${stamp}.json`;
     const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
     // Sur iPhone, le plus fiable est la feuille de partage ("Enregistrer dans Fichiers").
     try {
       const file = new File([blob], fileName, { type: "application/json" });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title: "Sauvegarde Mon Armoire" });
+        await navigator.share({ files: [file], title: "Sauvegarde pli" });
         return;
       }
     } catch (err) {
@@ -2035,7 +2049,7 @@ export default function App() {
       let data;
       try { data = JSON.parse(reader.result); } catch { data = null; }
       if (!data || data.app !== "mon-armoire" || !Array.isArray(data.items)) {
-        alert("Ce fichier n'est pas une sauvegarde Mon Armoire.");
+        alert("Ce fichier n'est pas une sauvegarde pli.");
         return;
       }
       const when = data.savedAt ? new Date(data.savedAt).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" }) : "?";
@@ -2325,14 +2339,8 @@ export default function App() {
           .splash-tag   { animation: splashIn 0.7s ease-out 0.4s forwards; opacity: 0; }
         `}</style>
         <div style={{ textAlign: "center", fontFamily: "Karla, sans-serif" }}>
-          <div
-            className="splash-mark"
-            style={{ width: 56, height: 56, borderRadius: "50%", background: "#FF4B33", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}
-          >
-            <Shirt size={26} color="#FFFFFF" />
-          </div>
-          <div className="splash-logo" style={{ fontSize: 28, fontWeight: 700, color: "#111111", fontFamily: "'Merriweather', serif" }}>
-            Mon Armoire
+          <div className="splash-mark" style={{ display: "flex", justifyContent: "center" }}>
+            <PliLogo size={96} />
           </div>
         </div>
       </div>
@@ -2346,10 +2354,10 @@ export default function App() {
       <div style={{ background: "#FFFFFF", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
         <style>{`@import url('https://fonts.googleapis.com/css2?family=Karla:wght@400;500;600;700&family=Merriweather:ital,wght@0,400;0,700;1,400;1,700&display=swap'); * { font-family: 'Karla', sans-serif; }`}</style>
         <div style={{ width: "100%", maxWidth: 320, textAlign: "center" }}>
-          <div style={{ width: 56, height: 56, borderRadius: "50%", background: "#FF4B33", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
-            <Shirt size={26} color="#FFFFFF" />
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}>
+            <PliLogo size={64} />
           </div>
-          <p style={{ fontSize: 22, fontWeight: 700, color: "#111111", marginBottom: 8, fontFamily: "'Merriweather', serif" }}>Bienvenue dans Mon Armoire</p>
+          <p style={{ fontSize: 22, fontWeight: 700, color: "#111111", marginBottom: 8, fontFamily: "'Merriweather', serif" }}>Bienvenue dans <i>pli</i></p>
           <p style={{ fontSize: 14, color: "#999999", marginBottom: 20 }}>Comment tu t'appelles ?</p>
           <input
             value={nameInput}
