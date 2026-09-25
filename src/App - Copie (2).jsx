@@ -237,13 +237,6 @@ export default function App() {
   // Météo du jour, affichée sur la page Aujourd'hui. "idle"/"loading"/"granted"/"denied"/"error".
   const [weather, setWeather] = useState(null);
   const [weatherStatus, setWeatherStatus] = useState("idle");
-  const [weatherCity, setWeatherCity] = useState("");
-  // Page Aujourd'hui : tenue affichée dans le carrousel, et carte "Redécouvre".
-  const [todaySlide, setTodaySlide] = useState(0);
-  const [rediscoverSkip, setRediscoverSkip] = useState(0);
-  const [rediscoverHidden, setRediscoverHidden] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("mon-armoire-rediscover-hidden") || "{}"); } catch { return {}; }
-  });
   // Garantit que l'écran d'ouverture reste visible au moins un court instant,
   // même si le chargement des données est instantané.
   const [splashDone, setSplashDone] = useState(false);
@@ -261,7 +254,6 @@ export default function App() {
     setDetailItemId(null);
     setCategoryView(null);
     setOutfitGroupView(null);
-    setTodaySlide(0);
   }
 
   // Détection du glissement au doigt (swipe) : on note où le doigt touche l'écran,
@@ -381,10 +373,6 @@ export default function App() {
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
   // La date dont on affiche le détail dans la popup "jour" (null = fermée).
   const [dayViewDate, setDayViewDate] = useState(null);
-  // Agenda : onglet "Calendrier" ou "Carnet" (les photos des tenues portées).
-  const [agendaTab, setAgendaTab] = useState("calendrier");
-  // Id de l'entrée d'agenda dont la photo portée est en cours d'envoi ("new" pour une nouvelle).
-  const [uploadingWornFor, setUploadingWornFor] = useState(null);
   // Mois ouverts dans l'Agenda (null = par défaut, seul le mois en cours est ouvert).
   const [agendaOpenMonths, setAgendaOpenMonths] = useState(null);
   const daySwipeX = useRef(null);
@@ -1037,9 +1025,9 @@ export default function App() {
   // d'être simplement ajouté aux tenues (utilisé depuis la popup rapide de la page Aujourd'hui).
   const [wizardTargetDate, setWizardTargetDate] = useState(null);
 
-  function openWizard(targetDate, baseItemId = null) {
+  function openWizard(targetDate) {
     setWizardSwap(null);
-    setWizardBaseItemId(baseItemId); // pas de pièce en tête restée cochée d'une fois sur l'autre (sauf si on en impose une)
+    setWizardBaseItemId(null); // pas de pièce en tête restée cochée d'une fois sur l'autre
     setWizardPieceCat(null);
     // Tenue prévue pour demain → on prend la prévision de demain.
     const dayWeather = targetDate && targetDate === tomorrowKey() && weather && weather.tomorrow ? weather.tomorrow : weather;
@@ -1048,11 +1036,9 @@ export default function App() {
     setWizardUseLocalWeather(true);
     const autoTag = weatherToTag(dayWeather);
     setCurrentWeather(autoTag || null);
-    const steps = autoTag
+    setWizardSteps(autoTag
       ? ["piece", "occasion", "couleur", "preference"]
-      : ["piece", "meteo", "occasion", "couleur", "preference"];
-    // Pièce déjà choisie (ex. depuis "Redécouvre") : on saute l'étape "Une pièce en tête ?".
-    setWizardSteps(baseItemId ? steps.filter((st) => st !== "piece") : steps);
+      : ["piece", "meteo", "occasion", "couleur", "preference"]);
     setWizardStep(0);
     setWizardShowResult(false);
     setWizardTargetDate(targetDate || null);
@@ -1445,20 +1431,10 @@ export default function App() {
         try {
           const { latitude, longitude } = pos.coords;
           const res = await fetch(
-            `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&forecast_days=3&timezone=auto`
+            `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&timezone=auto`
           );
           const data = await res.json();
-          // Matin / midi / soir : températures prévues à 9 h, 13 h et 19 h aujourd'hui.
-          const hourAt = (h) => data.hourly && data.hourly.temperature_2m && data.hourly.temperature_2m[h] != null
-            ? { temp: Math.round(data.hourly.temperature_2m[h]), code: data.hourly.weather_code ? data.hourly.weather_code[h] : null }
-            : null;
-          // Nom de la ville (facultatif : si ça échoue, on n'affiche simplement pas la ville).
-          fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${latitude}&longitude=${longitude}&localityLanguage=fr`)
-            .then((r) => r.json())
-            .then((g) => { const city = g.city || g.locality; if (city) setWeatherCity(city); })
-            .catch(() => {});
           setWeather({
-            hours: { matin: hourAt(9), midi: hourAt(13), soir: hourAt(19) },
             temp: Math.round(data.current.temperature_2m),
             min: Math.round(data.daily.temperature_2m_min[0]),
             max: Math.round(data.daily.temperature_2m_max[0]),
@@ -1522,129 +1498,6 @@ export default function App() {
     return [...new Set(todayItems.flatMap(itemColors).map((h) => h.toLowerCase()))].slice(0, 5);
   }
 
-  // Petite phrase de conseil sous la météo, selon l'écart de température et la pluie.
-  function weatherAdvice(w) {
-    if (!w) return "";
-    const swing = w.max - w.min;
-    if (isRainyDay(w)) return "Pluie prévue : prends une veste ou un imper.";
-    if (swing >= 8 && w.min < 15) return "Frais ce matin, plus doux ensuite : prévois une veste que tu peux enlever.";
-    if (w.max > 25) return "Grosse chaleur : matières légères, pas besoin de veste.";
-    if (w.max >= 20) return "Temps doux : une chemise ou une veste légère suffit.";
-    if (w.max >= 14) return "Temps frais : ajoute une couche, et une veste.";
-    return "Il fait froid : pull chaud et veste de rigueur.";
-  }
-
-  // Dernière date de port d'un vêtement (en millisecondes), 0 s'il n'a jamais été porté.
-  function lastWornTime(item) {
-    const d = item.wornDates || [];
-    return d.length ? Math.max(...d.map((x) => new Date(x).getTime())) : 0;
-  }
-
-  // "Redécouvre" : les pièces oubliées (pas portées depuis 30 jours, ou jamais),
-  // les plus oubliées d'abord, sans celles que l'on a mises de côté ("Pas celle-là").
-  const rediscoverPool = (() => {
-    const now = Date.now();
-    const monthAgo = now - 30 * 24 * 3600 * 1000;
-    return items
-      .filter((i) => lastWornTime(i) < monthAgo)
-      .filter((i) => !(rediscoverHidden[i.id] && new Date(rediscoverHidden[i.id]).getTime() > now))
-      .sort((a, b) => lastWornTime(a) - lastWornTime(b) || String(a.id).localeCompare(String(b.id)));
-  })();
-  const rediscoverItem = rediscoverPool.length ? rediscoverPool[rediscoverSkip % rediscoverPool.length] : null;
-
-  // Cache une pièce de "Redécouvre" pendant 30 jours (mémorisé sur cet appareil).
-  function hideRediscover(itemId) {
-    const until = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
-    setRediscoverHidden((prev) => {
-      const next = { ...prev, [itemId]: until };
-      try { localStorage.setItem("mon-armoire-rediscover-hidden", JSON.stringify(next)); } catch {}
-      return next;
-    });
-  }
-
-  // "Dernière sortie il y a 3 mois" / "Jamais portée"
-  function rediscoverSubtitle(item) {
-    const t = lastWornTime(item);
-    if (!t) return "Jamais portée";
-    const days = Math.floor((Date.now() - t) / (24 * 3600 * 1000));
-    if (days < 60) return `Dernière sortie il y a ${Math.round(days / 7)} semaines`;
-    if (days < 365) return `Dernière sortie il y a ${Math.round(days / 30)} mois`;
-    return "Dernière sortie il y a plus d'un an";
-  }
-
-  // "Ta semaine" : du lundi au dimanche, les pièces portées chaque jour
-  // (ou, à défaut, la tenue prévue ce jour-là dans l'agenda).
-  function weekDays() {
-    const now = new Date();
-    const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7), 12);
-    const letters = ["L", "M", "M", "J", "V", "S", "D"];
-    return letters.map((letter, i) => {
-      const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i, 12);
-      const key = d.toISOString().slice(0, 10);
-      const dayStr = d.toDateString();
-      const worn = items.filter((it) => (it.wornDates || []).some((x) => new Date(x).toDateString() === dayStr));
-      const planned = agendaEntries.filter((e) => e.dateStr === key);
-      return {
-        key, letter,
-        isToday: dayStr === now.toDateString(),
-        worn,
-        planned,
-        shown: worn.length ? worn : planned.length ? planned[0].planItems : [],
-      };
-    });
-  }
-
-  // Petite mosaïque (2×2) de vêtements, pour les jours de "Ta semaine".
-  function renderMiniMosaic(list, size, faded) {
-    const shown = list.slice(0, 4);
-    return (
-      <div style={{ width: size, height: size, borderRadius: 10, overflow: "hidden", display: "grid", gridTemplateColumns: shown.length > 1 ? "1fr 1fr" : "1fr", gridTemplateRows: shown.length > 2 ? "1fr 1fr" : "1fr", gap: 1, background: "#FFFFFF", opacity: faded ? 0.5 : 1 }}>
-        {shown.map((item) => (
-          <div key={item.id} style={{ background: COLORS.haze, minWidth: 0, minHeight: 0 }}>
-            {item.photo ? (
-              <img loading="lazy" decoding="async" src={thumbOf(item)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-            ) : (
-              <div style={{ width: "100%", height: "100%", background: item.hex }} />
-            )}
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  // "Flat lay" : les pièces de la tenue posées en éventail sur fond blanc, comme sur un lit.
-  // Positions (en %) : gauche, haut, largeur, hauteur, rotation.
-  const FLATLAY_LAYOUTS = {
-    1: [[18, 6, 64, 88, 0]],
-    2: [[5, 6, 50, 72, -3], [46, 22, 49, 72, 3]],
-    3: [[4, 4, 50, 56, -3], [50, 8, 46, 52, 3], [26, 52, 44, 44, -1]],
-    4: [[4, 4, 47, 50, -3], [51, 3, 45, 48, 3], [7, 53, 42, 43, 2], [52, 52, 43, 44, -2]],
-    5: [[4, 4, 44, 48, -3], [50, 3, 46, 44, 3], [4, 54, 34, 42, 2], [36, 50, 30, 38, -2], [66, 50, 31, 44, 3]],
-    6: [[3, 4, 32, 44, -3], [35, 3, 31, 44, 2], [67, 5, 30, 42, -2], [3, 52, 32, 44, 2], [35, 51, 31, 44, -2], [67, 52, 30, 43, 3]],
-  };
-  function renderFlatLay(planItems, height) {
-    const order = (i) => CATEGORIES.indexOf(i.category);
-    const list = [...planItems].sort((a, b) => order(a) - order(b)).slice(0, 6);
-    const layout = FLATLAY_LAYOUTS[list.length] || FLATLAY_LAYOUTS[6];
-    return (
-      <div style={{ position: "relative", height, borderRadius: 18, background: "#FFFFFF", overflow: "hidden" }}>
-        {list.map((item, idx) => {
-          const [l, t, w, h, r] = layout[idx];
-          return (
-            <div
-              key={item.id}
-              style={{ position: "absolute", left: `${l}%`, top: `${t}%`, width: `${w}%`, height: `${h}%`, transform: `rotate(${r}deg)`, borderRadius: 14, overflow: "hidden", boxShadow: "0 4px 14px rgba(0,0,0,0.12)", background: item.hex }}
-            >
-              {item.photo && (
-                <img loading="lazy" decoding="async" src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-              )}
-            </div>
-          );
-        })}
-      </div>
-    );
-  }
-
   // Date courte pour l'en-tête : "Jeudi 24 sept."
   function formatShortToday() {
     const str = new Date().toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "short" });
@@ -1705,105 +1558,8 @@ export default function App() {
     }
   }
 
-  // ── CARNET : photo de la tenue portée ──
-  // Enregistre (ou remplace) la photo portée d'une entrée d'agenda.
-  function setEntryWornPhoto(dateStr, entryId, url) {
-    setAgenda((prev) => ({
-      ...prev,
-      [dateStr]: normalizeDayEntries(prev[dateStr]).map((e) => (e.id === entryId ? { ...e, wornPhoto: url } : e)),
-    }));
-  }
-
-  // Retire la photo portée d'une entrée (la tenue prévue, elle, reste).
-  function removeEntryWornPhoto(dateStr, entryId) {
-    const entry = normalizeDayEntries(agenda[dateStr]).find((e) => e.id === entryId);
-    if (!entry) return;
-    if (entry.wornPhoto) deleteFromStorage(entry.wornPhoto);
-    if (entry.itemIds.length === 0) removeAgendaEntry(dateStr, entryId); // entrée qui n'était qu'une photo
-    else setEntryWornPhoto(dateStr, entryId, null);
-  }
-
-  // Photo choisie (appareil photo ou galerie) : on la réduit, on l'envoie sur Supabase,
-  // puis on la range sur l'entrée d'agenda. Sans entrée précise (bouton appareil photo du Carnet),
-  // on la met sur la première tenue du jour sans photo, ou on crée une entrée "photo seule".
-  function handleWornPhoto(e, dateStr, entryId) {
-    const file = e.target.files && e.target.files[0];
-    e.target.value = "";
-    if (!file) return;
-    let targetId = entryId;
-    let createNew = false;
-    if (targetId == null) {
-      const dayList = normalizeDayEntries(agenda[dateStr]);
-      const free = dayList.find((x) => !x.wornPhoto);
-      if (free) targetId = free.id;
-      else { targetId = Date.now(); createNew = true; }
-    }
-    const reader = new FileReader();
-    reader.onload = async () => {
-      setUploadingWornFor(createNew ? "new" : targetId);
-      try {
-        const resized = await resizeImageDataUrl(reader.result, 1200);
-        const url = await uploadPhotoToStorage(resized, "porte");
-        if (createNew) {
-          setAgenda((prev) => ({ ...prev, [dateStr]: [...normalizeDayEntries(prev[dateStr]), { id: targetId, label: "Tenue", itemIds: [], wornPhoto: url }] }));
-        } else {
-          const old = normalizeDayEntries(agenda[dateStr]).find((x) => x.id === targetId);
-          if (old && old.wornPhoto) deleteFromStorage(old.wornPhoto);
-          setEntryWornPhoto(dateStr, targetId, url);
-        }
-      } catch (err) {
-        alert("La photo n'a pas pu être envoyée. Vérifie ta connexion et réessaie.");
-      } finally {
-        setUploadingWornFor(null);
-      }
-    };
-    reader.onerror = () => alert("Cette photo n'a pas pu être ouverte. Essaie avec une autre photo.");
-    reader.readAsDataURL(file);
-  }
-
-  // Bloc "photo portée" d'une tenue, pour les popups : grande photo avec "Changer",
-  // ou zone pointillée "Ajouter la photo portée" (seulement pour aujourd'hui et les jours passés).
-  function renderWornPhotoBlock(entry) {
-    const busy = uploadingWornFor === entry.entryId;
-    if (entry.wornPhoto) {
-      return (
-        <div className="relative mb-3" style={{ borderRadius: 20, overflow: "hidden", background: COLORS.haze }}>
-          <img src={entry.wornPhoto} alt={`Tenue portée — ${entry.label}`} style={{ width: "100%", maxHeight: "60vh", objectFit: "cover", display: "block", opacity: busy ? 0.5 : 1 }} />
-          <div className="absolute flex gap-2" style={{ right: 12, bottom: 12 }}>
-            <button
-              type="button"
-              onClick={() => askConfirm("Retirer cette photo ?", () => removeEntryWornPhoto(entry.dateStr, entry.entryId))}
-              aria-label="Retirer la photo"
-              className="w-9 h-9 rounded-full flex items-center justify-center"
-              style={{ background: "rgba(255,255,255,0.92)" }}
-            >
-              <X size={14} />
-            </button>
-            <label className="h-9 px-3.5 rounded-full flex items-center gap-1.5 text-sm cursor-pointer" style={{ background: "rgba(255,255,255,0.92)", fontWeight: 600 }}>
-              <Camera size={14} /> {busy ? "Envoi…" : "Changer"}
-              <input type="file" accept="image/*" onChange={(ev) => handleWornPhoto(ev, entry.dateStr, entry.entryId)} className="hidden" />
-            </label>
-          </div>
-        </div>
-      );
-    }
-    if (entry.dateStr > todayKey()) return null;
-    return (
-      <label className="flex flex-col items-center justify-center gap-1.5 mb-3 cursor-pointer text-center" style={{ height: 150, borderRadius: 20, border: "1.5px dashed #D5D3CF", background: "#FAFAF8" }}>
-        <span className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: "#FDE8E5" }}>
-          <Camera size={18} color={COLORS.rose} />
-        </span>
-        <span className="text-sm" style={{ fontWeight: 600 }}>{busy ? "Envoi en cours…" : "Ajouter la photo portée"}</span>
-        <span className="text-xs" style={{ color: COLORS.muted }}>Un selfie miroir suffit</span>
-        <input type="file" accept="image/*" onChange={(ev) => handleWornPhoto(ev, entry.dateStr, entry.entryId)} className="hidden" />
-      </label>
-    );
-  }
-
   // Retire une tenue précise d'une date (et pas toutes les tenues de ce jour).
   function removeAgendaEntry(dateStr, entryId) {
-    const old = normalizeDayEntries(agenda[dateStr]).find((e) => e.id === entryId);
-    if (old && old.wornPhoto) deleteFromStorage(old.wornPhoto);
     setAgenda((prev) => {
       const remaining = normalizeDayEntries(prev[dateStr]).filter((e) => e.id !== entryId);
       const next = { ...prev };
@@ -1855,11 +1611,10 @@ export default function App() {
         entryId: entry.id,
         label: entry.label,
         outfitId: entry.outfitId, // présent si cette entrée a été créée depuis une tenue enregistrée
-        wornPhoto: entry.wornPhoto || null, // photo de la tenue portée (Carnet)
         planItems: entry.itemIds.map((id) => items.find((i) => i.id === id)).filter(Boolean), // au cas où un vêtement aurait été supprimé depuis
       }))
     )
-    .filter((entry) => entry.planItems.length > 0 || entry.wornPhoto) // une photo portée seule suffit
+    .filter((entry) => entry.planItems.length > 0)
     .sort((a, b) => a.dateStr.localeCompare(b.dateStr) || String(a.entryId).localeCompare(String(b.entryId)));
 
   // Tenues planifiées regroupées par mois, pour les rangées de l'Agenda :
@@ -2066,7 +1821,7 @@ export default function App() {
                   <div className="flex items-center gap-1.5 min-w-0">
                     <WeatherIcon size={15} color={COLORS.rose} />
                     <p className="text-sm truncate" style={{ color: "#666666" }}>
-                      {formatShortToday()}
+                      {formatShortToday()}{weatherInfo ? ` · ${weather.temp}°` : ""}
                     </p>
                   </div>
                   {palette.length > 0 && (
@@ -2115,52 +1870,8 @@ export default function App() {
                 <Sparkles size={24} />
               </button>
             )}
-            {/* ── Grande météo : température, matin / midi / soir, et un conseil ── */}
-            {weatherStatus === "granted" && weather && (() => {
-              const info = getWeatherInfo(weather.dailyCode != null ? weather.dailyCode : weather.code);
-              const BigIcon = getWeatherInfo(weather.code).Icon;
-              const hours = weather.hours || {};
-              const slots = [["Matin", hours.matin], ["Midi", hours.midi], ["Soir", hours.soir]].filter(([, h]) => h);
-              return (
-                <div className="mb-7 flex flex-col gap-3.5">
-                  <div className="flex items-end justify-between">
-                    <div className="flex items-start gap-2.5">
-                      <span className="display" style={{ fontWeight: 700, fontSize: 64, lineHeight: 0.9, letterSpacing: "-0.02em" }}>{weather.temp}°</span>
-                      <div style={{ paddingTop: 6 }}>
-                        <p style={{ fontSize: 15, fontWeight: 600 }}>{info.label || "Aujourd'hui"}</p>
-                        <p className="text-sm" style={{ color: COLORS.muted, marginTop: 2 }}>
-                          {weather.min}° / {weather.max}°{weatherCity ? ` · ${weatherCity}` : ""}
-                        </p>
-                      </div>
-                    </div>
-                    <BigIcon size={40} color={COLORS.rose} strokeWidth={1.6} />
-                  </div>
-                  {slots.length > 0 && (
-                    <div className="grid grid-cols-3 gap-2">
-                      {slots.map(([label, h]) => {
-                        const SlotIcon = getWeatherInfo(h.code).Icon;
-                        return (
-                          <div key={label} className="flex items-center justify-between" style={{ padding: "10px 12px", borderRadius: 14, border: `1px solid ${COLORS.line}` }}>
-                            <div>
-                              <p className="text-xs" style={{ color: COLORS.muted }}>{label}</p>
-                              <p style={{ fontSize: 16, fontWeight: 700, marginTop: 2 }}>{h.temp}°</p>
-                            </div>
-                            <SlotIcon size={20} color={COLORS.ink} strokeWidth={1.6} />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                  <div className="flex items-start gap-2.5" style={{ padding: "12px 14px", borderRadius: 14, background: "#FDE8E5" }}>
-                    <Sparkles size={16} color={COLORS.rose} style={{ flexShrink: 0, marginTop: 2 }} />
-                    <p className="text-sm" style={{ lineHeight: 1.4 }}>{weatherAdvice(weather)}</p>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* ── Pour aujourd'hui : la tenue en "flat lay", en carrousel s'il y en a plusieurs ── */}
-            <div className="p-4 mb-7" style={{ background: COLORS.haze, borderRadius: 24 }}>
+            {/* Carte mise en avant (fond gris clair) : c'est le plus important de la page */}
+            <div className="p-4 rounded-2xl mb-6" style={{ background: COLORS.haze }}>
               <div className="flex items-center justify-between mb-3">
                 <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Pour aujourd'hui</p>
                 <button
@@ -2174,182 +1885,55 @@ export default function App() {
                 </button>
               </div>
 
-              {todayEntries.length === 0 ? (
-                <div className="flex flex-col items-center justify-center text-center gap-3" style={{ height: 200, borderRadius: 18, background: "#FFFFFF", padding: 20 }}>
-                  <p className="text-sm" style={{ color: COLORS.muted }}>Rien de prévu pour l'instant</p>
-                  <div className="flex gap-2">
-                    {items.length > 0 && (
-                      <button type="button" onClick={() => openWizard(todayKey())} className="px-4 h-9 rounded-full text-sm flex items-center gap-1.5" style={{ background: COLORS.ink, color: "#FFFFFF", fontWeight: 600 }}>
-                        <Sparkles size={14} /> Générer
-                      </button>
-                    )}
-                    <button type="button" onClick={() => openQuickPlan(todayKey())} className="px-4 h-9 rounded-full text-sm" style={{ background: COLORS.haze, color: COLORS.ink, fontWeight: 600 }}>
-                      Choisir
+              {todayEntries.map((entry) => {
+                const validated = isPlanValidatedToday(entry.planItems);
+                return (
+                  <div key={entry.entryId} onClick={() => setOpenEntryId(entry.entryId)} className="relative mb-5 cursor-pointer">
+                    <div className="flex items-center justify-between gap-2 pr-8 mb-2">
+                      <p className="text-sm truncate" style={{ fontWeight: 600 }}>
+                        {entry.label}{validated ? " ✓" : ""}
+                      </p>
+                      {renderPaletteDots([...new Set(entry.planItems.flatMap(itemColors).map((h) => h.toLowerCase()))].slice(0, 5), 12, COLORS.haze)}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); askConfirm("Supprimer cette tenue prévue ?", () => removeAgendaEntry(entry.dateStr, entry.entryId)); }}
+                      className="absolute top-0 right-0 w-6 h-6 rounded-full flex items-center justify-center"
+                      style={{ background: "rgba(0,0,0,0.06)" }}
+                    >
+                      <X size={13} />
                     </button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div
-                    data-no-swipe
-                    className="no-scrollbar flex overflow-x-auto"
-                    style={{ scrollSnapType: "x mandatory", gap: 12 }}
-                    onScroll={(e) => {
-                      const el = e.currentTarget;
-                      const idx = Math.round(el.scrollLeft / (el.clientWidth + 12));
-                      if (idx !== todaySlide) setTodaySlide(idx);
-                    }}
-                  >
-                    {todayEntries.map((entry) => {
-                      const validated = isPlanValidatedToday(entry.planItems);
-                      return (
-                        <div key={entry.entryId} style={{ flex: "0 0 100%", scrollSnapAlign: "start", minWidth: 0 }}>
-                          <div className="relative cursor-pointer" onClick={() => setOpenEntryId(entry.entryId)}>
-                            {entry.wornPhoto ? (
-                              <img src={entry.wornPhoto} alt={`Tenue portée — ${entry.label}`} style={{ width: "100%", height: 330, objectFit: "cover", display: "block", borderRadius: 18 }} />
-                            ) : renderFlatLay(entry.planItems, 330)}
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); askConfirm("Supprimer cette tenue prévue ?", () => removeAgendaEntry(entry.dateStr, entry.entryId)); }}
-                              aria-label="Supprimer cette tenue prévue"
-                              className="absolute w-7 h-7 rounded-full flex items-center justify-center"
-                              style={{ top: 10, right: 10, background: "rgba(255,255,255,0.9)", zIndex: 2 }}
-                            >
-                              <X size={13} />
-                            </button>
-                          </div>
-                          <div className="flex items-center justify-between gap-2 mt-3">
-                            <p className="truncate" style={{ fontSize: 15, fontWeight: 600 }}>{entry.label}</p>
-                            {renderPaletteDots([...new Set(entry.planItems.flatMap(itemColors).map((h) => h.toLowerCase()))].slice(0, 5), 14, COLORS.haze)}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => { if (!validated) validateTodayPlan(entry); }}
-                            className="w-full mt-3 rounded-full flex items-center justify-center gap-1.5 text-sm"
-                            style={{ height: 44, fontWeight: 600, background: validated ? "#FFFFFF" : COLORS.ink, color: validated ? COLORS.ink : "#FFFFFF" }}
-                          >
-                            {validated ? "Portée aujourd'hui ✓" : "Je la porte aujourd'hui"}
-                          </button>
-                          {validated && !entry.wornPhoto && (
-                            <label className="flex items-center justify-center gap-1.5 text-sm mt-2.5 cursor-pointer" style={{ color: COLORS.rose, fontWeight: 600 }}>
-                              <Camera size={14} /> {uploadingWornFor === entry.entryId ? "Envoi en cours…" : "Ajoute la photo pour ton Carnet"}
-                              <input type="file" accept="image/*" onChange={(ev) => handleWornPhoto(ev, entry.dateStr, entry.entryId)} className="hidden" />
-                            </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {entry.planItems.map((item) => (
+                        <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.ivory }}>
+                          {item.photo ? (
+                            <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                          ) : (
+                            <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
                           )}
                         </div>
-                      );
-                    })}
-                  </div>
-                  {todayEntries.length > 1 && (
-                    <div className="flex justify-center gap-1.5 mt-3">
-                      {todayEntries.map((entry, i) => (
-                        <span key={entry.entryId} style={{ width: i === Math.min(todaySlide, todayEntries.length - 1) ? 16 : 6, height: 6, borderRadius: 3, background: i === Math.min(todaySlide, todayEntries.length - 1) ? COLORS.ink : "#D5D3CF", transition: "width 0.2s" }} />
                       ))}
                     </div>
-                  )}
-                </>
-              )}
+                  </div>
+                );
+              })}
             </div>
 
-            {/* ── Redécouvre : une pièce oubliée à ressortir ── */}
-            {rediscoverItem && (
-              <div className="flex gap-3.5 items-center mb-7" style={{ padding: 14, borderRadius: 20, border: `1px solid ${COLORS.line}` }}>
-                <button
-                  type="button"
-                  onClick={() => { changeView("dressing"); setDetailItemId(rediscoverItem.id); }}
-                  aria-label={`Voir ${rediscoverItem.name}`}
-                  className="flex-shrink-0 overflow-hidden"
-                  style={{ width: 88, height: 88, borderRadius: 16, background: rediscoverItem.photo ? COLORS.haze : rediscoverItem.hex }}
-                >
-                  {rediscoverItem.photo && (
-                    <img loading="lazy" decoding="async" src={thumbOf(rediscoverItem)} alt={rediscoverItem.name} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                  )}
-                </button>
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs uppercase" style={{ fontWeight: 600, color: COLORS.rose, letterSpacing: "0.06em" }}>Redécouvre</p>
-                  <p className="display truncate" style={{ fontWeight: 700, fontSize: 16, marginTop: 4 }}>{rediscoverItem.name}</p>
-                  <p className="text-sm" style={{ color: COLORS.muted, marginTop: 2 }}>{rediscoverSubtitle(rediscoverItem)}</p>
-                  <button
-                    type="button"
-                    onClick={() => openWizard(todayKey(), rediscoverItem.id)}
-                    className="mt-2.5 rounded-full flex items-center gap-1.5 text-sm"
-                    style={{ height: 34, padding: "0 14px", border: `1px solid ${COLORS.rose}`, color: COLORS.rose, fontWeight: 600 }}
-                  >
-                    <Sparkles size={14} /> Construire une tenue avec
-                  </button>
-                  <div className="flex gap-4 mt-2">
-                    {rediscoverPool.length > 1 && (
-                      <button type="button" onClick={() => setRediscoverSkip((n) => n + 1)} className="text-xs" style={{ color: COLORS.muted, fontWeight: 600 }}>
-                        Autre
-                      </button>
-                    )}
-                    <button type="button" onClick={() => hideRediscover(rediscoverItem.id)} className="text-xs" style={{ color: COLORS.muted, fontWeight: 600 }}>
-                      Pas celle-là
-                    </button>
-                  </div>
-                </div>
+            {/* ── Stats, en ligne, séparées par un simple trait ── */}
+            <div className="flex items-end gap-7 mb-7">
+              <button type="button" onClick={() => changeView("dressing")} className="text-left">
+                <p className="display" style={{ fontWeight: 700, fontSize: 26, lineHeight: 1 }}>{items.length}</p>
+                <p className="text-xs mt-1" style={{ color: COLORS.muted }}>vêtement{items.length > 1 ? "s" : ""}</p>
+              </button>
+              <button type="button" onClick={() => changeView("tenues")} className="text-left">
+                <p className="display" style={{ fontWeight: 700, fontSize: 26, lineHeight: 1 }}>{outfits.length}</p>
+                <p className="text-xs mt-1" style={{ color: COLORS.muted }}>tenue{outfits.length > 1 ? "s" : ""}</p>
+              </button>
+              <div className="text-left">
+                <p className="display" style={{ fontWeight: 700, fontSize: 26, lineHeight: 1, color: COLORS.rose }}>{favoriteItemsCount}</p>
+                <p className="text-xs mt-1" style={{ color: COLORS.muted }}>favori{favoriteItemsCount > 1 ? "s" : ""}</p>
               </div>
-            )}
-
-            {/* ── Ta semaine : du lundi au dimanche ── */}
-            {(() => {
-              const days = weekDays();
-              const wornCount = days.filter((d) => d.worn.length > 0).length;
-              return (
-                <div className="mb-7">
-                  <div className="flex items-baseline justify-between mb-2.5">
-                    <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Ta semaine</p>
-                    <p className="text-sm" style={{ color: COLORS.muted }}>
-                      {wornCount === 0 ? "Rien de porté encore" : `${wornCount} tenue${wornCount > 1 ? "s" : ""} portée${wornCount > 1 ? "s" : ""}`}
-                    </p>
-                  </div>
-                  <div className="grid grid-cols-7 gap-1.5">
-                    {days.map((d) => (
-                      <button
-                        key={d.key}
-                        type="button"
-                        onClick={() => {
-                          if (d.planned.length) setOpenEntryId(d.planned[0].entryId);
-                          else if (d.key >= todayKey()) openQuickPlan(d.key);
-                        }}
-                        className="flex flex-col items-center gap-1.5"
-                      >
-                        <div style={{ borderRadius: 10, boxShadow: d.isToday ? `0 0 0 2px ${COLORS.rose}` : "none" }}>
-                          {d.planned.some((e) => e.wornPhoto)
-                            ? <img src={d.planned.find((e) => e.wornPhoto).wornPhoto} alt="" style={{ width: 40, height: 40, borderRadius: 10, objectFit: "cover", display: "block" }} />
-                            : d.shown.length > 0
-                            ? renderMiniMosaic(d.shown, 40, d.worn.length === 0)
-                            : <div style={{ width: 40, height: 40, borderRadius: 10, border: "1.5px dashed #E2E0DC" }} />}
-                        </div>
-                        <span className="text-xs" style={{ color: d.isToday ? COLORS.rose : COLORS.muted, fontWeight: d.isToday ? 700 : 400 }}>{d.letter}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* ── Chiffres parlants ── */}
-            {(() => {
-              const monthKey = todayKey().slice(0, 7);
-              const wornThisMonth = items.filter((i) => (i.wornDates || []).some((d) => new Date(d).toISOString().slice(0, 7) === monthKey)).length;
-              const neverWorn = items.filter((i) => (i.wornDates || []).length === 0).length;
-              const stats = [
-                { n: wornThisMonth, label: `pièce${wornThisMonth > 1 ? "s" : ""} portée${wornThisMonth > 1 ? "s" : ""} ce mois-ci` },
-                { n: neverWorn, label: `jamais portée${neverWorn > 1 ? "s" : ""}` },
-                { n: favoriteItemsCount, label: `favori${favoriteItemsCount > 1 ? "s" : ""}`, accent: true },
-              ];
-              return (
-                <button type="button" onClick={() => changeView("dressing")} className="grid grid-cols-3 gap-2 mb-7 w-full text-left">
-                  {stats.map((st) => (
-                    <div key={st.label} style={{ padding: "14px 12px", borderRadius: 16, background: COLORS.haze }}>
-                      <p className="display" style={{ fontWeight: 700, fontSize: 26, lineHeight: 1, color: st.accent ? COLORS.rose : COLORS.ink }}>{st.n}</p>
-                      <p className="text-xs" style={{ marginTop: 6, lineHeight: 1.3, color: "#777777" }}>{st.label}</p>
-                    </div>
-                  ))}
-                </button>
-              );
-            })()}
+            </div>
 
             {/* ── Et demain ? ── */}
             {tomorrowEntries.length === 0 ? (
@@ -2435,8 +2019,6 @@ export default function App() {
                       </button>
                     </div>
 
-                    {renderWornPhotoBlock(entry)}
-
                     <div className="space-y-2 mb-3">
                       {entry.planItems.map((item) => (
                         <div key={item.id} className="flex items-center gap-3 p-2 rounded-lg" style={{ background: COLORS.ivory }}>
@@ -2476,7 +2058,7 @@ export default function App() {
                     )}
 
                     {/* Si cette tenue n'est pas encore dans la collection réutilisable, on propose de l'y ajouter */}
-                    {!entry.outfitId && entry.planItems.length > 0 && (
+                    {!entry.outfitId && (
                       <button
                         type="button"
                         onClick={() => saveAsReusableOutfit(entry.planItems.map((i) => i.id), entry.label, entry.dateStr, entry.entryId)}
@@ -3378,37 +2960,13 @@ export default function App() {
         {/* ══════════════════ VUE AGENDA ══════════════════ */}
         {view === "agenda" && (
           <div key={view} className={slideDir === "right" ? "slide-right" : "slide-left"}>
-            <h1 className="display text-3xl mb-4" style={{ fontWeight: 700 }}>Agenda</h1>
-
-            {/* Calendrier | Carnet */}
-            <div className="flex p-1 mb-6 rounded-full" style={{ background: COLORS.haze }}>
-              {[["calendrier", "Calendrier"], ["carnet", "Carnet"]].map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setAgendaTab(key)}
-                  className="flex-1 h-9 rounded-full text-sm"
-                  style={{ background: agendaTab === key ? "#FFFFFF" : "transparent", fontWeight: agendaTab === key ? 700 : 500, color: agendaTab === key ? COLORS.ink : COLORS.muted, boxShadow: agendaTab === key ? "0 1px 4px rgba(0,0,0,0.08)" : "none" }}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            <h1 className="display text-3xl mb-6" style={{ fontWeight: 700 }}>Agenda</h1>
 
             {items.length === 0 && (
               <p className="text-sm mb-5" style={{ color: COLORS.muted }}>Ajoute d'abord des vêtements.</p>
             )}
 
-            {agendaTab === "carnet" ? (
-              <label
-                aria-label="Ajouter la photo de ta tenue du jour"
-                className="flex items-center justify-center rounded-full text-white cursor-pointer"
-                style={{ position: "fixed", right: 20, bottom: 84, width: 56, height: 56, background: COLORS.rose, boxShadow: "0 6px 18px rgba(255,75,51,0.35)", zIndex: 30, opacity: uploadingWornFor ? 0.6 : 1 }}
-              >
-                <Camera size={24} />
-                <input type="file" accept="image/*" onChange={(ev) => handleWornPhoto(ev, todayKey(), null)} className="hidden" />
-              </label>
-            ) : items.length > 0 && (
+            {items.length > 0 && (
               <button
                 type="button"
                 onClick={() => openQuickPlan(todayKey())}
@@ -3420,44 +2978,6 @@ export default function App() {
               </button>
             )}
 
-            {agendaTab === "carnet" && (() => {
-              const shots = agendaEntries.filter((e) => e.wornPhoto).sort((a, b) => b.dateStr.localeCompare(a.dateStr) || String(b.entryId).localeCompare(String(a.entryId)));
-              if (shots.length === 0) {
-                return (
-                  <div className="flex flex-col items-center text-center gap-2 py-12 px-6">
-                    <span className="w-12 h-12 rounded-full flex items-center justify-center mb-1" style={{ background: "#FDE8E5" }}>
-                      <Camera size={20} color={COLORS.rose} />
-                    </span>
-                    <p className="display" style={{ fontWeight: 700, fontSize: 17 }}>Ton carnet est vide</p>
-                    <p className="text-sm" style={{ color: COLORS.muted }}>Prends-toi en photo avec ta tenue du jour.</p>
-                  </div>
-                );
-              }
-              return (
-                <>
-                  <p className="text-sm mb-3" style={{ color: COLORS.muted }}>{shots.length} look{shots.length > 1 ? "s" : ""} porté{shots.length > 1 ? "s" : ""}</p>
-                  <div style={{ columnCount: 2, columnGap: 10 }}>
-                    {shots.map((entry) => (
-                      <button
-                        key={entry.entryId}
-                        type="button"
-                        onClick={() => setDayViewDate(entry.dateStr)}
-                        aria-label={`${formatShortDate(entry.dateStr)} — ${entry.label}`}
-                        className="relative w-full block mb-2.5 overflow-hidden"
-                        style={{ borderRadius: 18, background: COLORS.haze, breakInside: "avoid" }}
-                      >
-                        <img loading="lazy" decoding="async" src={entry.wornPhoto} alt="" style={{ width: "100%", display: "block" }} />
-                        <span className="absolute text-xs" style={{ left: 8, bottom: 8, padding: "3px 9px", borderRadius: 999, background: "rgba(255,255,255,0.92)", fontWeight: 600 }}>
-                          {formatShortDate(entry.dateStr)}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </>
-              );
-            })()}
-
-            {agendaTab === "calendrier" && (<>
             {/* ── Calendrier ── */}
             <div className="p-4 rounded-2xl mb-6" style={{ background: COLORS.haze }}>
               <div className="flex items-center justify-between mb-2">
@@ -3560,9 +3080,7 @@ export default function App() {
                               outlineOffset: 2,
                             }}
                           >
-                            {entry.wornPhoto ? (
-                              <img loading="lazy" decoding="async" src={entry.wornPhoto} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", gridColumn: "1 / -1", gridRow: "1 / -1" }} />
-                            ) : shown.map((item) => (
+                            {shown.map((item) => (
                               item.photo ? (
                                 <img loading="lazy" decoding="async" key={item.id} src={thumbOf(item)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
                               ) : (
@@ -3581,7 +3099,6 @@ export default function App() {
                 </section>
               ))}
             </div>
-            </>)}
 
             {/* ── Popup "jour" : détail d'une date cliquée dans le calendrier, avec glissement entre jours ── */}
             {dayViewDate && (() => {
@@ -3627,23 +3144,19 @@ export default function App() {
                       <div className="space-y-3 mb-4">
                         {dayEntries.map((entry) => (
                           <div key={entry.entryId}>
-                            {renderWornPhotoBlock(entry)}
-                            <div className="flex items-center justify-between gap-2 mb-2">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <p className="text-sm truncate" style={{ fontWeight: 600 }}>{entry.label}</p>
-                                {entry.planItems.length > 0 && renderPaletteDots([...new Set(entry.planItems.flatMap(itemColors).map((h) => h.toLowerCase()))].slice(0, 5), 12)}
-                              </div>
+                            <div className="flex items-center justify-between mb-2">
+                              <p className="text-sm truncate" style={{ fontWeight: 600 }}>{entry.label}</p>
                               <button
                                 type="button"
                                 onClick={() => askConfirm("Supprimer cette tenue prévue ?", () => removeAgendaEntry(entry.dateStr, entry.entryId))}
                                 aria-label="Supprimer cette tenue prévue"
-                                className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
+                                className="w-7 h-7 rounded-full flex items-center justify-center"
                                 style={{ background: COLORS.haze }}
                               >
                                 <X size={13} />
                               </button>
                             </div>
-                            <div className={entry.wornPhoto ? "grid grid-cols-5 gap-2" : "grid grid-cols-3 gap-2"}>
+                            <div className="grid grid-cols-3 gap-2">
                               {entry.planItems.map((item) => (
                                 <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
                                   {item.photo ? (
