@@ -7,6 +7,45 @@
     <meta name="apple-mobile-web-app-title" content="pli" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
     <title>pli</title>
+    <script>
+      // Filet de sécurité : si l'appli ne démarre pas, on affiche l'erreur au lieu d'un écran blanc,
+      // avec un bouton "Réparer" qui vide le cache de l'appli (tes données, elles, ne sont pas touchées).
+      (function () {
+        function rootEmpty() { var r = document.getElementById('root'); return !r || !r.children.length; }
+        function fix() {
+          var jobs = [];
+          if (navigator.serviceWorker) jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); }));
+          if (window.caches) jobs.push(caches.keys().then(function (ks) { return Promise.all(ks.map(function (k) { return caches.delete(k); })); }));
+          Promise.all(jobs).then(function () { location.reload(); }, function () { location.reload(); });
+        }
+        function show(msg) {
+          var box = document.getElementById('pli-err-msg');
+          if (box) { box.textContent += '\n\n' + msg; return; }
+          var d = document.createElement('div');
+          d.style.cssText = 'position:fixed;inset:0;background:#fff;padding:48px 24px;font:15px -apple-system,Helvetica,sans-serif;color:#111;z-index:99999;overflow:auto';
+          d.innerHTML = '<p style="font-weight:700;font-size:20px;margin:0 0 8px">Oups, pli n’a pas démarré</p>' +
+            '<p style="margin:0 0 14px;color:#666">Fais une capture d’écran pour Claude, puis touche « Réparer ».</p>' +
+            '<pre id="pli-err-msg" style="white-space:pre-wrap;word-break:break-word;background:#F3F2EF;padding:12px;border-radius:12px;font-size:12px;margin:0"></pre>' +
+            '<button id="pli-fix" style="margin-top:14px;height:46px;padding:0 24px;border:none;border-radius:23px;background:#111;color:#fff;font-weight:700;font-size:15px">Réparer</button>';
+          document.body.appendChild(d);
+          document.getElementById('pli-err-msg').textContent = msg;
+          document.getElementById('pli-fix').onclick = fix;
+        }
+        window.addEventListener('error', function (e) {
+          var t = e.target;
+          var msg = t && t !== window && (t.src || t.href)
+            ? 'Fichier introuvable : ' + (t.src || t.href)
+            : (e.message || 'Erreur') + (e.filename ? '\n' + e.filename + ' : ligne ' + e.lineno : '') + (e.error && e.error.stack ? '\n' + e.error.stack : '');
+          if (t && t.tagName === 'IMG') return; // une photo qui ne charge pas n'empêche pas l'appli de marcher
+          setTimeout(function () { if (rootEmpty()) show(msg); }, 50);
+        }, true);
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e.reason;
+          setTimeout(function () { if (rootEmpty()) show('Promesse rejetée : ' + (r && (r.stack || r.message) || r)); }, 50);
+        });
+        setTimeout(function () { if (rootEmpty()) show('Rien ne s’est affiché après 8 secondes.'); }, 8000);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
