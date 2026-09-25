@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Plus, X, Pencil, ChevronDown, Shirt, Layers, Sparkles, Camera, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Cloud, CloudOff, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
+import { Plus, X, Pencil, ChevronDown, Shirt, Layers, Sparkles, Camera, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Check, Crop, MoreVertical, Cloud, CloudOff, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
 import Cropper from "react-easy-crop";
 import { supabase } from "./supabaseClient";
 
@@ -69,6 +69,24 @@ function hexToColorFamily(hex) {
 
 // Transforme un code couleur (#RRGGBB) en teinte / saturation / luminosité (HSL).
 // h = position sur l'arc-en-ciel (0 à 360), s = intensité (0 à 1), l = clarté (0 = noir, 1 = blanc).
+// Nom de couleur en français, pour les pastilles de la fiche vêtement.
+function hexToColorName(hex) {
+  const { h, s, l } = hexToHsl(hex);
+  if (l < 0.13) return "Noir";
+  if (l > 0.93 && s < 0.5) return "Blanc";
+  if (s < 0.12) return l > 0.75 ? "Blanc cassé" : "Gris";
+  if (h >= 20 && h < 55 && l > 0.62 && s < 0.6) return "Beige";
+  if (h >= 10 && h < 50 && l < 0.45) return "Marron";
+  if (h < 12 || h >= 345) return l > 0.72 ? "Rose" : l < 0.3 ? "Bordeaux" : "Rouge";
+  if (h < 40) return "Orange";
+  if (h < 65) return l < 0.4 ? "Kaki" : "Jaune";
+  if (h < 165) return l < 0.3 ? "Vert foncé" : "Vert";
+  if (h < 200) return "Bleu ciel";
+  if (h < 250) return l < 0.3 ? "Marine" : "Bleu";
+  if (h < 290) return "Violet";
+  return "Rose";
+}
+
 function hexToHsl(hex) {
   if (!hex || hex.length < 7) return { h: 0, s: 0, l: 0.5 };
   const r = parseInt(hex.slice(1, 3), 16) / 255;
@@ -488,8 +506,17 @@ export default function App() {
 
   // Quel vêtement est actuellement affiché en fiche détaillée (null = aucun).
   const [detailItemId, setDetailItemId] = useState(null);
+  // Fiche vêtement : onglet ouvert, menu "⋯", et petit message de confirmation.
+  const [detailTab, setDetailTab] = useState("apropos");
+  const [itemMenuOpen, setItemMenuOpen] = useState(false);
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+  useEffect(() => { setDetailTab("apropos"); setItemMenuOpen(false); }, [detailItemId]);
+  const [outfitTab, setOutfitTab] = useState("apropos");
+  const [outfitMenuOpen, setOutfitMenuOpen] = useState(false);
   // Quelle tenue est actuellement affichée en fiche détaillée (null = aucune).
   const [detailOutfitId, setDetailOutfitId] = useState(null);
+  useEffect(() => { setOutfitTab("apropos"); setOutfitMenuOpen(false); }, [detailOutfitId]);
   // Popup de sélection des vêtements "qui vont bien avec" celui affiché en fiche.
   const [showPairsModal, setShowPairsModal] = useState(false);
 
@@ -980,6 +1007,7 @@ export default function App() {
     const newItem = { id: Date.now(), ...form, pairsWith: [], wornDates: [] };
     setItems((prev) => [...prev, newItem]);
     setForm({ name: "", category: form.category, hex: "#C4808C", extraHexes: [], photo: null, weather: [], occasions: [] });
+    showToast({ text: `« ${newItem.name} » ajouté ✓`, action: "Voir", onAction: () => { changeView("dressing"); setDetailItemId(newItem.id); } });
   }
 
   function removeItem(id) {
@@ -1242,6 +1270,7 @@ export default function App() {
     e.preventDefault();
     commitOutfit();
     setShowOutfitForm(false);
+    showToast({ text: "Tenue enregistrée ✓", action: "Voir", onAction: () => changeView("tenues") });
   }
 
   function removeOutfit(id) {
@@ -2092,6 +2121,7 @@ export default function App() {
     if (!dateStr || itemIds.length === 0) return;
     const newEntry = { id: Date.now(), label: label.trim() || "Tenue", itemIds, ...(outfitId ? { outfitId } : {}) };
     setAgenda((prev) => ({ ...prev, [dateStr]: [...normalizeDayEntries(prev[dateStr]), newEntry] }));
+    showToast({ text: dateStr === todayKey() ? "Prévue pour aujourd'hui ✓" : dateStr === tomorrowKey() ? "Prévue pour demain ✓" : `Prévue le ${formatShortDate(dateStr)} ✓` });
     setPlanDate("");
     setPlanItemIds([]);
     setPlanLabel("");
@@ -2112,6 +2142,48 @@ export default function App() {
         [dateStr]: normalizeDayEntries(prev[dateStr]).map((e) => (e.id === entryId ? { ...e, outfitId: newOutfitId } : e)),
       }));
     }
+  }
+
+  // Petit message en bas de l'écran, qui disparaît tout seul.
+  function showToast(t) {
+    clearTimeout(toastTimer.current);
+    setToast(t);
+    toastTimer.current = setTimeout(() => setToast(null), 3500);
+  }
+
+  // "Je le porte aujourd'hui" depuis la fiche d'un vêtement : on l'ajoute à la tenue du jour
+  // (on la crée si rien n'est prévu) et on le compte comme porté. Un 2e toucher annule.
+  function wearItemToday(item) {
+    const today = todayKey();
+    const todayStr = new Date().toDateString();
+    const wornToday = (item.wornDates || []).some((d) => new Date(d).toDateString() === todayStr);
+    if (wornToday) {
+      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, wornDates: (i.wornDates || []).filter((d) => new Date(d).toDateString() !== todayStr) } : i)));
+      setAgenda((prev) => {
+        const list = normalizeDayEntries(prev[today]);
+        const next = list.map((e) => ({ ...e, itemIds: e.itemIds.filter((id) => id !== item.id) })).filter((e) => e.itemIds.length > 0 || e.wornPhoto);
+        const copy = { ...prev };
+        if (next.length) copy[today] = next; else delete copy[today];
+        return copy;
+      });
+      showToast({ text: "Retiré de ta tenue du jour" });
+      return;
+    }
+    const list = normalizeDayEntries(agenda[today]);
+    let label;
+    if (list.length === 0) {
+      label = "Tenue du jour";
+      setAgenda((prev) => ({ ...prev, [today]: [...normalizeDayEntries(prev[today]), { id: Date.now(), label, itemIds: [item.id] }] }));
+    } else {
+      const target = list[0];
+      label = target.label;
+      setAgenda((prev) => ({
+        ...prev,
+        [today]: normalizeDayEntries(prev[today]).map((e) => (e.id === target.id && !e.itemIds.includes(item.id) ? { ...e, itemIds: [...e.itemIds, item.id] } : e)),
+      }));
+    }
+    setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, wornDates: [...(i.wornDates || []), new Date().toISOString()] } : i)));
+    showToast({ text: `Ajouté à « ${label} »`, sub: "Ta tenue d'aujourd'hui", action: "Voir", onAction: () => changeView("accueil") });
   }
 
   // Ouvre la création d'une tenue (depuis l'onglet Tenues ou le bouton "+").
@@ -2240,6 +2312,7 @@ export default function App() {
           if (old && old.wornPhoto) deleteFromStorage(old.wornPhoto);
           setEntryWornPhoto(dateStr, targetId, url);
         }
+        showToast({ text: "Photo ajoutée au Carnet ✓", action: "Voir", onAction: () => { changeView("agenda"); setAgendaTab("carnet"); } });
       } catch (err) {
         alert("La photo n'a pas pu être envoyée. Vérifie ta connexion et réessaie.");
       } finally {
@@ -2419,6 +2492,7 @@ export default function App() {
     if (entry.outfitId) {
       setOutfits((prev) => prev.map((o) => (o.id === entry.outfitId ? { ...o, wornDates: [...(o.wornDates || []), todayISO] } : o)));
     }
+    showToast({ text: "Portée aujourd'hui ✓" });
   }
 
   // Retire un vêtement d'une tenue précise (identifiée par sa date + son id d'entrée).
@@ -2998,15 +3072,15 @@ export default function App() {
                       <button
                         onClick={() => { validateTodayPlan(entry); setOpenEntryId(null); }}
                         disabled={validated}
-                        className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm"
+                        className="w-full flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold"
                         style={{ background: COLORS.rose, color: "white" }}
                       >
-                        {validated ? "Tenue validée ✓" : "Oui, je porte cette tenue aujourd'hui"}
+                        {validated ? "Portée aujourd'hui ✓" : "Je la porte aujourd'hui"}
                       </button>
                     ) : (
                       <button
                         onClick={() => setOpenEntryId(null)}
-                        className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm"
+                        className="w-full flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold"
                         style={{ background: COLORS.rose, color: "white" }}
                       >
                         C'est prêt
@@ -3055,7 +3129,7 @@ export default function App() {
                   type="button"
                   onClick={() => setCategoryView(null)}
                   aria-label="Retour à la garde-robe"
-                  className="w-11 h-11 -ml-3 mb-1 rounded-full flex items-center justify-center"
+                  className="w-10 h-10 mb-1 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}
                 >
                   <ArrowLeft size={20} />
                 </button>
@@ -3166,214 +3240,266 @@ export default function App() {
         )}
 
         {/* ══════════════════ FICHE ARTICLE (détail d'un vêtement) ══════════════════ */}
-        {view === "dressing" && detailItem && (
+        {view === "dressing" && detailItem && (() => {
+          const it = detailItem;
+          const update = (patch) => setItems((prev) => prev.map((i) => (i.id === it.id ? { ...i, ...(typeof patch === "function" ? patch(i) : patch) } : i)));
+          const worn = it.wornDates || [];
+          const wornToday = worn.some((d) => new Date(d).toDateString() === new Date().toDateString());
+          const withOutfits = outfitsByRecent.filter((o) => (o.itemIds || []).includes(it.id));
+          const monthKey = todayKey().slice(0, 7);
+          const wornThisMonth = worn.filter((d) => new Date(d).toISOString().slice(0, 7) === monthKey).length;
+          const lastWorn = worn.length ? worn.reduce((a, b) => (new Date(a) > new Date(b) ? a : b)) : null;
+          const cut = isCutout(it);
+          const roundBtn = { width: 40, height: 40, borderRadius: 20, background: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
+          const chipStyle = (active) => ({ background: active ? COLORS.ink : "transparent", color: active ? "white" : COLORS.ink, border: `1px solid ${active ? COLORS.ink : COLORS.line}` });
+          return (
           <div key={detailItemId} className="slide-right">
-            <button type="button" onClick={() => setDetailItemId(null)} aria-label="Retour" className="w-11 h-11 -ml-3 mb-2 rounded-full flex items-center justify-center">
-              <ArrowLeft size={20} />
-            </button>
-
-            <div className="mb-4 relative">
-              {detailItem.photo ? (
-                <img src={detailItem.photo} alt={detailItem.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 20, display: "block", background: COLORS.haze }} />
-              ) : (
-                <div style={{ background: detailItem.hex, aspectRatio: "1 / 1", borderRadius: 20 }} />
-              )}
-              <div className="absolute top-3 right-3 flex gap-1.5">
-                {detailItem.photo && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      // On repart de la photo déjà enregistrée (pas d'un nouveau fichier),
-                      // juste pour ajuster son cadrage. On repart de "photoOriginal" (la
-                      // photo complète d'avant tout recadrage) si elle existe, plutôt que
-                      // du résultat déjà découpé — pour retrouver toute l'image.
-                      setRawImageSrc(detailItem.photoOriginal || detailItem.photo);
-                      setCropPosition({ x: 0, y: 0 });
-                      setCropZoom(1);
-                      setCropTargetItemId(detailItem.id);
-                      setShowCropModal(true);
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs"
-                    style={{ background: "rgba(0,0,0,0.55)", color: "white" }}
-                  >
-                    <Search size={13} /> Recadrer
-                  </button>
-                )}
-                <label
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs cursor-pointer"
-                  style={{ background: "rgba(0,0,0,0.55)", color: "white" }}
-                >
-                  <Camera size={13} /> {detailItem.photo ? "Modifier la photo" : "Ajouter une photo"}
-                  <input type="file" accept="image/*" onChange={(e) => handlePhotoChange(e, detailItem.id)} className="hidden" />
-                </label>
-              </div>
-              <div className="p-4 flex items-center justify-between gap-3">
-                {renderEditableTitle(detailItem.name, (v) => setItems((prev) => prev.map((i) => (i.id === detailItem.id ? { ...i, name: v } : i))), "Nom du vêtement")}
-                <button
-                  type="button"
-                  onClick={() => toggleFavoriteItem(detailItem.id)}
-                  aria-label={detailItem.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}
-                  className="w-11 h-11 -mr-2 rounded-full flex items-center justify-center flex-shrink-0"
-                >
-                  <Heart size={20} color={detailItem.favorite ? COLORS.rose : COLORS.ink} fill={detailItem.favorite ? COLORS.rose : "none"} />
+            {/* ── Panneau photo, gris clair, arrondi en bas ── */}
+            <div className="-mx-5 -mt-10 px-5 pb-5 mb-4" style={{ background: COLORS.haze, borderRadius: "0 0 32px 32px", paddingTop: 44 }}>
+              <div className="flex items-center justify-between">
+                <button type="button" onClick={() => setDetailItemId(null)} aria-label="Retour" style={roundBtn}>
+                  <ArrowLeft size={19} />
                 </button>
+                <div className="flex gap-2 relative">
+                  <button type="button" onClick={() => toggleFavoriteItem(it.id)} aria-label={it.favorite ? "Retirer des favoris" : "Ajouter aux favoris"} style={roundBtn}>
+                    <Heart size={18} color={COLORS.rose} fill={it.favorite ? COLORS.rose : "none"} />
+                  </button>
+                  <button type="button" onClick={() => setItemMenuOpen((v) => !v)} aria-label="Plus d'options" style={roundBtn}>
+                    <MoreVertical size={18} />
+                  </button>
+                  {itemMenuOpen && (
+                    <div className="absolute right-0 flex flex-col py-1" style={{ top: 48, width: 210, background: "#FFFFFF", borderRadius: 16, boxShadow: "0 10px 30px rgba(0,0,0,0.15)", zIndex: 20 }}>
+                      {it.photo && (
+                        <button type="button" onClick={() => { setItemMenuOpen(false); detectItemColor(it); }} className="flex items-center gap-2.5 px-4 py-3 text-sm text-left">
+                          <Sparkles size={15} /> Détecter les couleurs
+                        </button>
+                      )}
+                      <button type="button" onClick={() => { setItemMenuOpen(false); askConfirm("Supprimer ce vêtement ?", () => removeItem(it.id)); }} className="flex items-center gap-2.5 px-4 py-3 text-sm text-left" style={{ color: COLORS.rose }}>
+                        <X size={15} /> Supprimer ce vêtement
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
 
-            {/* Catégorie — modifiable si tu t'es trompée à l'ajout */}
-            <div className="mb-5">
-              <div className="flex gap-1.5 flex-wrap">
-                {CATEGORIES.map((c) => {
-                  const active = detailItem.category === c;
-                  return (
-                    <button
-                      key={c}
-                      onClick={() => setItems((prev) => prev.map((i) => i.id === detailItem.id ? { ...i, category: c } : i))}
-                      className="px-4 h-9 rounded-full text-sm"
-                      style={{
-                        background: active ? COLORS.ink : "transparent",
-                        color: active ? "white" : COLORS.ink,
-                        border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
-                      }}
-                    >
-                      {catLabel(c)}
-                    </button>
-                  );
-                })}
+              <div className="flex justify-center py-4">
+                {it.photo ? (
+                  <img
+                    src={it.photo}
+                    alt={it.name}
+                    style={cut
+                      ? { width: "100%", maxWidth: 300, height: 280, objectFit: "contain", display: "block", filter: "drop-shadow(0 8px 14px rgba(0,0,0,0.15))" }
+                      : { width: "100%", maxWidth: 300, aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 20, display: "block" }}
+                  />
+                ) : (
+                  <div style={{ width: "100%", maxWidth: 300, aspectRatio: "1 / 1", borderRadius: 20, background: it.hex }} />
+                )}
               </div>
-            </div>
 
-            {/* Couleur — sert de vignette de secours sans photo, et alimente le générateur de tenue */}
-            <div className="mb-5">
+              {/* Recadrer et changer la photo, puis le bouton principal : je le porte aujourd'hui */}
               <div className="flex items-center gap-2">
-                <input
-                  type="color"
-                  value={detailItem.hex}
-                  aria-label="Couleur principale"
-                  onChange={(e) => setItems((prev) => prev.map((i) => i.id === detailItem.id ? { ...i, hex: e.target.value } : i))}
-                  className="w-12 h-9 rounded-xl cursor-pointer"
-                  style={{ border: `1px solid ${COLORS.line}` }}
-                />
-                {/* Couleurs secondaires (motifs) : 2 max, modifiables et supprimables */}
-                {(detailItem.extraHexes || []).map((hex, idx) => (
-                  <span key={idx} className="relative">
-                    <input
-                      type="color"
-                      value={hex}
-                      aria-label={`Couleur secondaire ${idx + 1}`}
-                      onChange={(e) => setItems((prev) => prev.map((i) => i.id === detailItem.id ? { ...i, extraHexes: (i.extraHexes || []).map((h, k) => (k === idx ? e.target.value : h)) } : i))}
-                      className="w-9 h-9 rounded-full cursor-pointer"
-                      style={{ border: `1px solid ${COLORS.line}` }}
-                    />
+                  {it.photo && (
                     <button
                       type="button"
-                      onClick={() => setItems((prev) => prev.map((i) => i.id === detailItem.id ? { ...i, extraHexes: (i.extraHexes || []).filter((_, k) => k !== idx) } : i))}
-                      aria-label="Retirer cette couleur"
-                      className="absolute w-5 h-5 rounded-full flex items-center justify-center"
-                      style={{ top: -6, right: -6, background: "#FFFFFF", boxShadow: "0 1px 3px rgba(0,0,0,0.25)" }}
+                      aria-label="Recadrer la photo"
+                      style={{ ...roundBtn, width: 50, height: 50, borderRadius: 25 }}
+                      onClick={() => {
+                        // On repart de la photo complète d'origine si elle existe, pour retrouver toute l'image.
+                        setRawImageSrc(it.photoOriginal || it.photo);
+                        setCropPosition({ x: 0, y: 0 });
+                        setCropZoom(1);
+                        setCropTargetItemId(it.id);
+                        setShowCropModal(true);
+                      }}
                     >
-                      <X size={10} />
+                      <Crop size={18} />
                     </button>
-                  </span>
-                ))}
-                {(detailItem.extraHexes || []).length < 2 && (
-                  <button
-                    type="button"
-                    onClick={() => setItems((prev) => prev.map((i) => i.id === detailItem.id ? { ...i, extraHexes: [...(i.extraHexes || []), "#cccccc"] } : i))}
-                    aria-label="Ajouter une couleur (motif)"
-                    className="w-9 h-9 rounded-full flex items-center justify-center"
-                    style={{ border: `1.5px dashed ${COLORS.line}`, color: COLORS.muted }}
-                  >
-                    <Plus size={15} />
-                  </button>
-                )}
-                {detailItem.photo && (
-                  <button
-                    type="button"
-                    onClick={() => detectItemColor(detailItem)}
-                    disabled={detectingColors === detailItem.id}
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-full text-xs"
-                    style={{ border: `1px solid ${COLORS.line}`, opacity: detectingColors === detailItem.id ? 0.5 : 1 }}
-                  >
-                    <Sparkles size={13} />
-                    {detectingColors === detailItem.id ? "…" : "Détecter"}
-                  </button>
-                )}
+                  )}
+                  <label aria-label={it.photo ? "Changer la photo" : "Ajouter une photo"} style={{ ...roundBtn, width: 50, height: 50, borderRadius: 25, cursor: "pointer" }}>
+                    <Camera size={18} />
+                    <input type="file" accept="image/*" onChange={(e) => handlePhotoChange(e, it.id)} className="hidden" />
+                  </label>
+              <button
+                type="button"
+                onClick={() => wearItemToday(it)}
+                className="flex-1 rounded-full flex items-center justify-center gap-2 text-sm"
+                style={{ height: 50, fontWeight: 700, background: wornToday ? "#FFFFFF" : COLORS.rose, color: wornToday ? COLORS.ink : "#FFFFFF", boxShadow: wornToday ? "none" : "0 6px 16px rgba(255,75,51,0.3)" }}
+              >
+                <Check size={18} color={wornToday ? COLORS.rose : "#FFFFFF"} strokeWidth={2.4} />
+                {wornToday ? "Porté aujourd'hui" : "Je le porte aujourd'hui"}
+              </button>
               </div>
             </div>
 
-            {/* Météo — "|| []" au cas où ce vêtement existait avant l'ajout de ce champ */}
-            <div className="mb-5">
-              <div className="flex gap-1.5 flex-wrap">
-                {WEATHER_TAGS.map((w) => {
-                  const active = (detailItem.weather || []).includes(w);
-                  return (
-                    <button key={w} onClick={() => setItems((prev) => prev.map((i) => i.id === detailItem.id ? { ...i, weather: active ? (i.weather || []).filter((x) => x !== w) : [...(i.weather || []), w] } : i))}
-                      className="px-4 h-9 rounded-full text-sm" style={{
-                        background: active ? COLORS.ink : "transparent",
-                        color: active ? "white" : COLORS.ink,
-                        border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
-                      }}>
-                      {w}
-                    </button>
-                  );
-                })}
-              </div>
+            {/* Nom (modifiable) */}
+            <div className="mb-3">
+              {renderEditableTitle(it.name, (v) => update({ name: v }), "Nom du vêtement")}
             </div>
 
-            {/* Occasion — "|| []" au cas où ce vêtement existait avant l'ajout de ce champ */}
-            <div className="mb-5">
-              <div className="flex gap-1.5 flex-wrap">
-                {OCCASIONS.map((o) => {
-                  const active = (detailItem.occasions || []).includes(o);
-                  return (
-                    <button key={o} onClick={() => setItems((prev) => prev.map((i) => i.id === detailItem.id ? { ...i, occasions: active ? (i.occasions || []).filter((x) => x !== o) : [...(i.occasions || []), o] } : i))}
-                      className="px-4 h-9 rounded-full text-sm" style={{
-                        background: active ? COLORS.ink : "transparent",
-                        color: active ? "white" : COLORS.ink,
-                        border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
-                      }}>
-                      {o}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Va bien avec */}
-            <div className="mb-5">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-1.5">
-                  <Link2 size={13} style={{ opacity: 0.6 }} />
-                  <p className="text-xs font-medium" style={{ opacity: 0.6 }}>Va bien avec</p>
-                </div>
+            {/* Onglets */}
+            <div className="flex mb-4" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+              {[["apropos", "À propos"], ["tenues", `Tenues${withOutfits.length ? ` · ${withOutfits.length}` : ""}`], ["stats", "Stats"]].map(([k, l]) => (
                 <button
-                  onClick={() => setShowPairsModal(true)}
-                  className="text-xs px-2.5 py-1 rounded-full"
-                  style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}
+                  key={k}
+                  type="button"
+                  onClick={() => setDetailTab(k)}
+                  className="flex-1 py-2.5 text-sm"
+                  style={{ fontWeight: detailTab === k ? 700 : 500, color: detailTab === k ? COLORS.ink : COLORS.muted, borderBottom: `2px solid ${detailTab === k ? COLORS.ink : "transparent"}`, marginBottom: -1 }}
                 >
-                  Choisir
+                  {l}
                 </button>
-              </div>
-
-              {(detailItem.pairsWith || []).length === 0 ? (
-                <p className="text-xs" style={{ opacity: 0.5 }}>Aucune</p>
-              ) : (
-                <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-                  {(detailItem.pairsWith || []).map((otherId) => {
-                    const other = items.find((i) => i.id === otherId);
-                    if (!other) return null;
-                    return (
-                      <div key={other.id} className="rounded-lg overflow-hidden" style={{ border: `1px solid ${COLORS.line}` }}>
-                        <div style={{ background: other.hex, aspectRatio: "1 / 1", overflow: "hidden" }}>
-                          {other.photo && <img loading="lazy" decoding="async" src={thumbOf(other)} alt={other.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+              ))}
             </div>
+
+            {/* ── À propos : catégorie, couleurs, météo, occasions, va bien avec, notes ── */}
+            {detailTab === "apropos" && (
+              <div>
+                <div className="flex items-center justify-between py-3" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                  <span style={{ fontSize: 15, fontWeight: 600 }}>Catégorie</span>
+                  <select
+                    value={it.category}
+                    onChange={(e) => update({ category: e.target.value })}
+                    className="text-sm rounded-xl px-3"
+                    style={{ height: 34, background: COLORS.haze, border: "none", outline: "none" }}
+                  >
+                    {CATEGORIES.map((c) => <option key={c} value={c}>{catLabel(c)}</option>)}
+                  </select>
+                </div>
+
+                <div className="py-4" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                  <p className="mb-3" style={{ fontSize: 15, fontWeight: 600 }}>Couleurs</p>
+                  <div className="flex flex-wrap gap-2">
+                    {/* Couleur principale : touche la pastille pour la changer */}
+                    <label className="inline-flex items-center gap-2 h-9 pl-1.5 pr-3 rounded-full text-sm cursor-pointer" style={{ background: COLORS.haze }}>
+                      <span style={{ width: 24, height: 24, borderRadius: 12, background: it.hex, border: "1px solid rgba(0,0,0,0.08)" }} />
+                      {hexToColorName(it.hex)}
+                      <input type="color" value={it.hex} onChange={(e) => update({ hex: e.target.value })} className="hidden" />
+                    </label>
+                    {(it.extraHexes || []).map((hex, idx) => (
+                      <span key={idx} className="inline-flex items-center gap-2 h-9 pl-1.5 pr-2 rounded-full text-sm" style={{ background: COLORS.haze }}>
+                        <label className="inline-flex items-center gap-2 cursor-pointer">
+                          <span style={{ width: 24, height: 24, borderRadius: 12, background: hex, border: "1px solid rgba(0,0,0,0.08)" }} />
+                          {hexToColorName(hex)}
+                          <input type="color" value={hex} onChange={(e) => update((i) => ({ extraHexes: (i.extraHexes || []).map((h, k) => (k === idx ? e.target.value : h)) }))} className="hidden" />
+                        </label>
+                        <button type="button" onClick={() => update((i) => ({ extraHexes: (i.extraHexes || []).filter((_, k) => k !== idx) }))} aria-label="Retirer cette couleur" className="w-6 h-6 flex items-center justify-center">
+                          <X size={13} />
+                        </button>
+                      </span>
+                    ))}
+                    {(it.extraHexes || []).length < 2 && (
+                      <button type="button" onClick={() => update((i) => ({ extraHexes: [...(i.extraHexes || []), "#cccccc"] }))} aria-label="Ajouter une couleur" className="w-9 h-9 rounded-full flex items-center justify-center" style={{ border: `1.5px dashed ${COLORS.line}`, color: COLORS.muted }}>
+                        <Plus size={15} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="py-4" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                  <p className="mb-3" style={{ fontSize: 15, fontWeight: 600 }}>Météo</p>
+                  <div className="flex gap-1.5 flex-wrap">
+                    {WEATHER_TAGS.map((w) => {
+                      const active = (it.weather || []).includes(w);
+                      return (
+                        <button key={w} type="button" onClick={() => update((i) => ({ weather: active ? (i.weather || []).filter((x) => x !== w) : [...(i.weather || []), w] }))} className="px-4 h-9 rounded-full text-sm" style={chipStyle(active)}>
+                          {w}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="py-4" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                  <p className="mb-3" style={{ fontSize: 15, fontWeight: 600 }}>Occasions</p>
+                  <div className="flex gap-1.5 flex-wrap">
+                    {OCCASIONS.map((o) => {
+                      const active = (it.occasions || []).includes(o);
+                      return (
+                        <button key={o} type="button" onClick={() => update((i) => ({ occasions: active ? (i.occasions || []).filter((x) => x !== o) : [...(i.occasions || []), o] }))} className="px-4 h-9 rounded-full text-sm" style={chipStyle(active)}>
+                          {o}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="py-4" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                  <div className="flex items-center justify-between mb-3">
+                    <p style={{ fontSize: 15, fontWeight: 600 }}>Va bien avec</p>
+                    <button type="button" onClick={() => setShowPairsModal(true)} aria-label="Choisir les pièces qui vont bien avec" className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                      <Plus size={15} />
+                    </button>
+                  </div>
+                  {(it.pairsWith || []).length === 0 ? (
+                    <p className="text-sm" style={{ color: COLORS.muted }}>Aucune pour l'instant</p>
+                  ) : (
+                    <div data-no-swipe className="no-scrollbar flex gap-2 overflow-x-auto">
+                      {(it.pairsWith || []).map((otherId) => {
+                        const other = items.find((i) => i.id === otherId);
+                        if (!other) return null;
+                        return (
+                          <button key={other.id} type="button" onClick={() => setDetailItemId(other.id)} className="flex-shrink-0 overflow-hidden" style={{ width: 64, height: 64, borderRadius: 14, background: other.photo ? COLORS.haze : other.hex }}>
+                            {other.photo && <img loading="lazy" decoding="async" src={thumbOf(other)} alt={other.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="py-4">
+                  <textarea
+                    value={it.notes || ""}
+                    onChange={(e) => update({ notes: e.target.value })}
+                    placeholder="Notes…"
+                    rows={2}
+                    className="w-full px-4 py-2.5 rounded-xl text-sm"
+                    style={{ background: COLORS.haze, border: "none", outline: "none", resize: "vertical" }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* ── Tenues : toutes les tenues avec cette pièce ── */}
+            {detailTab === "tenues" && (
+              <div>
+                <div className="flex gap-2 mb-4">
+                  <button type="button" onClick={() => { openCreateOutfit(); setSelectedIds([it.id]); }} className="flex-1 h-10 rounded-full text-sm flex items-center justify-center gap-1.5" style={{ background: COLORS.haze, fontWeight: 600 }}>
+                    <Plus size={15} /> Créer une tenue avec
+                  </button>
+                  <button type="button" onClick={() => openWizard(todayKey(), it.id)} className="flex-1 h-10 rounded-full text-sm flex items-center justify-center gap-1.5" style={{ background: COLORS.ink, color: "#FFFFFF", fontWeight: 600 }}>
+                    <Sparkles size={15} /> Me suggérer
+                  </button>
+                </div>
+                {withOutfits.length === 0 ? (
+                  <p className="text-sm py-8 text-center" style={{ color: COLORS.muted }}>Aucune tenue avec cette pièce pour l'instant</p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    {withOutfits.map((o) => renderOutfitTile(o, undefined, (outfit) => { changeView("tenues"); setDetailOutfitId(outfit.id); }))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Stats ── */}
+            {detailTab === "stats" && (
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { n: worn.length, label: worn.length > 1 ? "fois porté" : "fois porté" },
+                  { n: wornToday ? "Auj." : lastWorn ? formatDate(lastWorn) : "Jamais", label: "dernière fois", accent: true, small: !wornToday },
+                  { n: withOutfits.length, label: withOutfits.length > 1 ? "tenues avec" : "tenue avec" },
+                  { n: wornThisMonth, label: "fois ce mois-ci" },
+                ].map((st) => (
+                  <div key={st.label} style={{ padding: "14px 12px", borderRadius: 16, background: COLORS.haze }}>
+                    <p className="display" style={{ fontWeight: 700, fontSize: st.small ? 17 : 24, lineHeight: 1.1, color: st.accent ? COLORS.rose : COLORS.ink }}>{st.n}</p>
+                    <p className="text-xs" style={{ marginTop: 6, color: "#777777" }}>{st.label}</p>
+                  </div>
+                ))}
+                <p className="col-span-2 text-xs mt-2" style={{ color: COLORS.muted }}>
+                  Dans ta garde-robe depuis le {formatDate(new Date(typeof it.id === "number" && it.id > 1e12 ? it.id : Date.now()).toISOString())}
+                </p>
+              </div>
+            )}
 
             {/* ── Popup de sélection des associations ── */}
             {showPairsModal && (
@@ -3389,50 +3515,17 @@ export default function App() {
                       <X size={14} />
                     </button>
                   </div>
-
                   {renderItemRows({
-                    exclude: (i) => i.id === detailItem.id,
-                    isSelected: (i) => (detailItem.pairsWith || []).includes(i.id),
-                    onPick: (i) => togglePair(detailItem.id, i.id),
+                    exclude: (i) => i.id === it.id,
+                    isSelected: (i) => (it.pairsWith || []).includes(i.id),
+                    onPick: (i) => togglePair(it.id, i.id),
                   })}
                 </div>
               </div>
             )}
-
-            {/* Notes libres */}
-            <div className="mb-5">
-              <textarea
-                value={detailItem.notes || ""}
-                onChange={(e) => setItems((prev) => prev.map((i) => (i.id === detailItem.id ? { ...i, notes: e.target.value } : i)))}
-                placeholder="Notes…"
-                rows={3}
-                className="w-full px-4 py-2.5 rounded-xl text-sm"
-                style={{ border: `1px solid ${COLORS.line}`, outline: "none", resize: "vertical" }}
-              />
-            </div>
-
-            {/* Historique de port */}
-            <div className="mb-5">
-              <div className="flex items-center gap-1.5 mb-2">
-                <Clock size={13} style={{ opacity: 0.6 }} />
-                <p className="text-xs font-medium" style={{ opacity: 0.6 }}>
-                  {(detailItem.wornDates || []).length === 0 ? "Jamais porté" : `Porté ${(detailItem.wornDates || []).length} fois`}
-                </p>
-              </div>
-              {(detailItem.wornDates || []).length === 0 ? (
-                null
-              ) : (
-                <p className="text-xs" style={{ opacity: 0.7 }}>
-                  Dernière fois : {formatDate(detailItem.wornDates[(detailItem.wornDates || []).length - 1])}
-                </p>
-              )}
-            </div>
-
-            <button onClick={() => askConfirm("Supprimer ce vêtement ?", () => removeItem(detailItem.id))} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs" style={{ border: `1px solid ${COLORS.rose}`, color: COLORS.rose }}>
-              <X size={13} /> Supprimer
-            </button>
           </div>
-        )}
+          );
+        })()}
 
         {/* ══════════════════ VUE TENUES ══════════════════ */}
         {view === "tenues" && (
@@ -3445,15 +3538,6 @@ export default function App() {
                   {hasOutfitFilter ? `${filteredOutfits.length} sur ${outfits.length}` : outfits.length} tenue{outfits.length > 1 ? "s" : ""}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => { setCreateOutfitStep("select"); setOutfitTags(EMPTY_OUTFIT_TAGS); setOutfitName(nextOutfitName()); setSelectedIds([]); setShowOutfitForm(true); }}
-                aria-label="Créer une tenue"
-                className="w-11 h-11 -mr-2 rounded-full flex items-center justify-center"
-                style={{ color: COLORS.ink }}
-              >
-                <Plus size={22} />
-              </button>
             </div>
             )}
 
@@ -3545,118 +3629,163 @@ export default function App() {
               const outfit = outfits.find((o) => o.id === detailOutfitId);
               if (!outfit) return null;
               const validated = isWornToday(outfit);
+              const pieces = itemsForOutfit(outfit);
+              const pal = outfitPalette(outfit);
+              const worn = outfit.wornDates || [];
+              const monthKey = todayKey().slice(0, 7);
+              const wornThisMonth = worn.filter((d) => new Date(d).toISOString().slice(0, 7) === monthKey).length;
+              const lastWorn = worn.length ? worn.reduce((a, b) => (new Date(a) > new Date(b) ? a : b)) : null;
+              const updateOutfit = (fn) => setOutfits((prev) => prev.map((o) => (o.id === outfit.id ? { ...o, ...fn(o) } : o)));
+              const roundBtn = { width: 40, height: 40, borderRadius: 20, background: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
+              const chipStyle = (active) => ({ background: active ? COLORS.ink : "transparent", color: active ? "white" : COLORS.ink, border: `1px solid ${active ? COLORS.ink : COLORS.line}` });
               return (
-                <div>
-                  <button type="button" onClick={() => setDetailOutfitId(null)} aria-label="Retour aux tenues" className="w-11 h-11 -ml-3 mb-2 rounded-full flex items-center justify-center">
-                    <ArrowLeft size={20} />
-                  </button>
-
-                  <div className="flex items-center justify-between mb-3">
-                    {renderEditableTitle(outfit.name, (v) => setOutfits((prev) => prev.map((o) => (o.id === outfit.id ? { ...o, name: v } : o))), "Nom de la tenue")}
-                    <div className="flex gap-1">
-                      <button onClick={() => toggleFavoriteOutfit(outfit.id)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
-                        <Heart size={15} color={outfit.favorite ? COLORS.rose : COLORS.ink} fill={outfit.favorite ? COLORS.rose : "none"} />
+                <div className="slide-right">
+                  {/* ── Panneau : la tenue en flat lay ── */}
+                  <div className="-mx-5 -mt-10 px-5 pb-5 mb-4" style={{ background: COLORS.haze, borderRadius: "0 0 32px 32px", paddingTop: 44 }}>
+                    <div className="flex items-center justify-between mb-4">
+                      <button type="button" onClick={() => setDetailOutfitId(null)} aria-label="Retour aux tenues" style={roundBtn}>
+                        <ArrowLeft size={19} />
                       </button>
-                    </div>
-                  </div>
-
-                  {(() => {
-                    const pal = outfitPalette(outfit);
-                    if (pal.length === 0) return null;
-                    return (
-                      <div className="mb-4">
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="text-xs" style={{ color: COLORS.muted }}>Palette</span>
-                          {renderPaletteDots(pal, 22)}
-                        </div>
-                        <div style={{ height: 4, borderRadius: 2, background: pal.length > 1 ? `linear-gradient(90deg, ${pal.join(", ")})` : pal[0] }} />
-                      </div>
-                    );
-                  })()}
-
-                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-5">
-                    {itemsForOutfit(outfit).map((item) => (
-                      <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
-                        {item.photo ? (
-                          <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
-                        ) : (
-                          <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
+                      <div className="flex gap-2 relative">
+                        <button type="button" onClick={() => toggleFavoriteOutfit(outfit.id)} aria-label={outfit.favorite ? "Retirer des favoris" : "Ajouter aux favoris"} style={roundBtn}>
+                          <Heart size={18} color={COLORS.rose} fill={outfit.favorite ? COLORS.rose : "none"} />
+                        </button>
+                        <button type="button" onClick={() => setOutfitMenuOpen((v) => !v)} aria-label="Plus d'options" style={roundBtn}>
+                          <MoreVertical size={18} />
+                        </button>
+                        {outfitMenuOpen && (
+                          <div className="absolute right-0 flex flex-col py-1" style={{ top: 48, width: 210, background: "#FFFFFF", borderRadius: 16, boxShadow: "0 10px 30px rgba(0,0,0,0.15)", zIndex: 20 }}>
+                            <button type="button" onClick={() => { setOutfitMenuOpen(false); askConfirm("Supprimer cette tenue ?", () => { removeOutfit(outfit.id); setDetailOutfitId(null); }); }} className="flex items-center gap-2.5 px-4 py-3 text-sm text-left" style={{ color: COLORS.rose }}>
+                              <X size={15} /> Supprimer cette tenue
+                            </button>
+                          </div>
                         )}
                       </div>
+                    </div>
+
+                    {pieces.length > 0 ? renderFlatLay(pieces, 300) : (
+                      <div className="flex items-center justify-center text-sm" style={{ height: 200, borderRadius: 18, background: "#FFFFFF", color: COLORS.muted }}>Aucune pièce</div>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (validated) { unmarkOutfitWorn(outfit); showToast({ text: "Retirée d'aujourd'hui" }); }
+                        else { markOutfitWorn(outfit); showToast({ text: "Portée aujourd'hui ✓", sub: "Ajoutée à ta page Aujourd'hui" }); }
+                      }}
+                      className="w-full mt-4 rounded-full flex items-center justify-center gap-2 text-sm"
+                      style={{ height: 50, fontWeight: 700, background: validated ? "#FFFFFF" : COLORS.rose, color: validated ? COLORS.ink : "#FFFFFF", boxShadow: validated ? "none" : "0 6px 16px rgba(255,75,51,0.3)" }}
+                    >
+                      <Check size={18} color={validated ? COLORS.rose : "#FFFFFF"} strokeWidth={2.4} />
+                      {validated ? "Portée aujourd'hui" : "Je la porte aujourd'hui"}
+                    </button>
+                  </div>
+
+                  {/* Nom (modifiable) */}
+                  <div className="mb-3">
+                    {renderEditableTitle(outfit.name, (v) => updateOutfit(() => ({ name: v })), "Nom de la tenue")}
+                  </div>
+
+                  {/* Onglets */}
+                  <div className="flex mb-4" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                    {[["apropos", "À propos"], ["pieces", `Pièces · ${pieces.length}`], ["stats", "Stats"]].map(([k, l]) => (
+                      <button
+                        key={k}
+                        type="button"
+                        onClick={() => setOutfitTab(k)}
+                        className="flex-1 py-2.5 text-sm"
+                        style={{ fontWeight: outfitTab === k ? 700 : 500, color: outfitTab === k ? COLORS.ink : COLORS.muted, borderBottom: `2px solid ${outfitTab === k ? COLORS.ink : "transparent"}`, marginBottom: -1 }}
+                      >
+                        {l}
+                      </button>
                     ))}
                   </div>
 
-                  {/* Météo */}
-                  <div className="mb-5">
-                    <div className="flex gap-1.5 flex-wrap">
-                      {WEATHER_TAGS.map((w) => {
-                        const active = (outfit.weather || []).includes(w);
-                        return (
-                          <button key={w} onClick={() => setOutfits((prev) => prev.map((o) => o.id === outfit.id ? { ...o, weather: active ? (o.weather || []).filter((x) => x !== w) : [...(o.weather || []), w] } : o))}
-                            className="px-4 h-9 rounded-full text-sm" style={{
-                              background: active ? COLORS.ink : "transparent",
-                              color: active ? "white" : COLORS.ink,
-                              border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
-                            }}>
-                            {w}
-                          </button>
-                        );
-                      })}
+                  {outfitTab === "apropos" && (
+                    <div>
+                      {pal.length > 0 && (
+                        <div className="py-4" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                          <p className="mb-3" style={{ fontSize: 15, fontWeight: 600 }}>Palette</p>
+                          <div className="flex flex-wrap gap-2">
+                            {pal.map((hex) => (
+                              <span key={hex} className="inline-flex items-center gap-2 h-9 pl-1.5 pr-3 rounded-full text-sm" style={{ background: COLORS.haze }}>
+                                <span style={{ width: 24, height: 24, borderRadius: 12, background: hex, border: "1px solid rgba(0,0,0,0.08)" }} />
+                                {hexToColorName(hex)}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <div className="py-4" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                        <p className="mb-3" style={{ fontSize: 15, fontWeight: 600 }}>Météo</p>
+                        <div className="flex gap-1.5 flex-wrap">
+                          {WEATHER_TAGS.map((w) => {
+                            const active = (outfit.weather || []).includes(w);
+                            return (
+                              <button key={w} type="button" onClick={() => updateOutfit((o) => ({ weather: active ? (o.weather || []).filter((x) => x !== w) : [...(o.weather || []), w] }))} className="px-4 h-9 rounded-full text-sm" style={chipStyle(active)}>
+                                {w}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <div className="py-4">
+                        <p className="mb-3" style={{ fontSize: 15, fontWeight: 600 }}>Occasions</p>
+                        <div className="flex gap-1.5 flex-wrap">
+                          {OCCASIONS.map((o2) => {
+                            const active = (outfit.occasions || []).includes(o2);
+                            return (
+                              <button key={o2} type="button" onClick={() => updateOutfit((o) => ({ occasions: active ? (o.occasions || []).filter((x) => x !== o2) : [...(o.occasions || []), o2] }))} className="px-4 h-9 rounded-full text-sm" style={chipStyle(active)}>
+                                {o2}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  )}
 
-                  {/* Occasion */}
-                  <div className="mb-5">
-                    <div className="flex gap-1.5 flex-wrap">
-                      {OCCASIONS.map((o2) => {
-                        const active = (outfit.occasions || []).includes(o2);
-                        return (
-                          <button key={o2} onClick={() => setOutfits((prev) => prev.map((o) => o.id === outfit.id ? { ...o, occasions: active ? (o.occasions || []).filter((x) => x !== o2) : [...(o.occasions || []), o2] } : o))}
-                            className="px-4 h-9 rounded-full text-sm" style={{
-                              background: active ? COLORS.ink : "transparent",
-                              color: active ? "white" : COLORS.ink,
-                              border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
-                            }}>
-                            {o2}
-                          </button>
-                        );
-                      })}
+                  {outfitTab === "pieces" && (
+                    <div className="flex flex-col">
+                      {pieces.map((item, idx) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => { changeView("dressing"); setDetailItemId(item.id); }}
+                          className="flex items-center gap-3 py-2.5 text-left"
+                          style={{ borderBottom: idx < pieces.length - 1 ? `1px solid ${COLORS.line}` : "none" }}
+                        >
+                          <span className="overflow-hidden flex-shrink-0" style={{ width: 56, height: 56, borderRadius: 14, background: item.photo ? COLORS.haze : item.hex }}>
+                            {item.photo && <img loading="lazy" decoding="async" src={thumbOf(item)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                          </span>
+                          <span className="flex-1 min-w-0">
+                            <span className="block text-sm truncate" style={{ fontWeight: 600 }}>{item.name}</span>
+                            <span className="block text-xs" style={{ color: COLORS.muted }}>{catLabel(item.category)}</span>
+                          </span>
+                          <ArrowLeft size={16} color={COLORS.muted} style={{ transform: "rotate(180deg)" }} />
+                        </button>
+                      ))}
                     </div>
-                  </div>
+                  )}
 
-                  {/* Historique de port */}
-                  <div className="mb-5">
-                    <div className="flex items-center gap-1.5 mb-2">
-                      <Clock size={13} style={{ opacity: 0.6 }} />
-                      <p className="text-xs font-medium" style={{ opacity: 0.6 }}>
-                        {(outfit.wornDates || []).length === 0 ? "Jamais portée" : `Portée ${(outfit.wornDates || []).length} fois`}
+                  {outfitTab === "stats" && (
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { n: worn.length, label: "fois portée" },
+                        { n: validated ? "Auj." : lastWorn ? formatDate(lastWorn) : "Jamais", label: "dernière fois", accent: true, small: !validated },
+                        { n: pieces.length, label: pieces.length > 1 ? "pièces" : "pièce" },
+                        { n: wornThisMonth, label: "fois ce mois-ci" },
+                      ].map((st) => (
+                        <div key={st.label} style={{ padding: "14px 12px", borderRadius: 16, background: COLORS.haze }}>
+                          <p className="display" style={{ fontWeight: 700, fontSize: st.small ? 17 : 24, lineHeight: 1.1, color: st.accent ? COLORS.rose : COLORS.ink }}>{st.n}</p>
+                          <p className="text-xs" style={{ marginTop: 6, color: "#777777" }}>{st.label}</p>
+                        </div>
+                      ))}
+                      <p className="col-span-2 text-xs mt-2" style={{ color: COLORS.muted }}>
+                        Créée le {formatDate(new Date(typeof outfit.id === "number" && outfit.id > 1e12 ? outfit.id : Date.now()).toISOString())}
                       </p>
                     </div>
-                    {(outfit.wornDates || []).length === 0 ? (
-                      null
-                    ) : (
-                      <p className="text-xs" style={{ opacity: 0.7 }}>
-                        Dernière fois : {formatDate(outfit.wornDates[outfit.wornDates.length - 1])}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex gap-2 flex-wrap">
-                    <button
-                      onClick={() => (validated ? unmarkOutfitWorn(outfit) : markOutfitWorn(outfit))}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs"
-                      style={
-                        validated
-                          ? { background: COLORS.rose, color: "white", border: `1px solid ${COLORS.rose}` }
-                          : { border: `1px solid ${COLORS.gold}`, color: COLORS.gold }
-                      }
-                    >
-                      {validated ? "Portée aujourd'hui ✓" : "Portée aujourd'hui"}
-                    </button>
-                    <button onClick={() => askConfirm("Supprimer cette tenue ?", () => { removeOutfit(outfit.id); setDetailOutfitId(null); })} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs" style={{ border: `1px solid ${COLORS.rose}`, color: COLORS.rose }}>
-                      <X size={13} /> Supprimer cette tenue
-                    </button>
-                  </div>
+                  )}
                 </div>
               );
             })()}
@@ -3929,7 +4058,7 @@ export default function App() {
 
                     <button
                       onClick={() => { const d = dayViewDate; setDayViewDate(null); openQuickPlan(d); }}
-                      className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm"
+                      className="w-full flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold"
                       style={{ border: `1px solid ${COLORS.gold}`, color: COLORS.gold }}
                     >
                       <Plus size={14} /> Planifier une tenue pour ce jour
@@ -3999,7 +4128,7 @@ export default function App() {
                         ))}
                       </div>
                     </div>
-                    <button type="submit" className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm text-white" style={{ background: COLORS.rose }}>
+                    <button type="submit" className="w-full flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold text-white" style={{ background: COLORS.rose }}>
                       <Plus size={16} /> Ajouter
                     </button>
                   </form>
@@ -4130,7 +4259,7 @@ export default function App() {
 
                         {renderOutfitTagPicker()}
 
-                        <button type="submit" disabled={!outfitName.trim() || selectedIds.length === 0} className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm text-white" style={{ background: COLORS.rose, opacity: !outfitName.trim() || selectedIds.length === 0 ? 0.4 : 1 }}>
+                        <button type="submit" disabled={!outfitName.trim() || selectedIds.length === 0} className="w-full flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold text-white" style={{ background: COLORS.rose, opacity: !outfitName.trim() || selectedIds.length === 0 ? 0.4 : 1 }}>
                           <Plus size={16} /> Enregistrer la tenue
                         </button>
                         <div className="h-6" />
@@ -4281,7 +4410,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setConfirmDialog(null)}
-                      className="flex-1 px-4 py-2.5 rounded-full text-sm"
+                      className="flex-1 px-5 h-12 rounded-full text-sm font-bold"
                       style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}
                     >
                       Annuler
@@ -4289,7 +4418,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}
-                      className="flex-1 px-4 py-2.5 rounded-full text-sm text-white"
+                      className="flex-1 px-5 h-12 rounded-full text-sm font-bold text-white"
                       style={{ background: COLORS.rose }}
                     >
                       Supprimer
@@ -4391,7 +4520,7 @@ export default function App() {
                           )}
 
                           {current && (
-                            <button type="button" onClick={() => removeWizardItem(wizardSwap)} className="w-full px-4 py-2 rounded-full text-sm" style={{ border: `1px solid ${COLORS.rose}`, color: COLORS.rose }}>
+                            <button type="button" onClick={() => removeWizardItem(wizardSwap)} className="w-full px-5 h-12 rounded-full text-sm font-bold" style={{ border: `1px solid ${COLORS.rose}`, color: COLORS.rose }}>
                               Retirer cette pièce
                             </button>
                           )}
@@ -4466,13 +4595,13 @@ export default function App() {
                         {!wizardTargetDate && !wizardFromOutfitId && renderOutfitTagPicker()}
 
                         <div className="flex gap-2">
-                          <button onClick={wizardGenerate} className="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm" style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}>
+                          <button onClick={wizardGenerate} className="flex items-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold" style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}>
                             <Sparkles size={14} /> Régénérer
                           </button>
                           <button
                             onClick={wizardSaveOutfit}
                             disabled={selectedIds.length === 0 || (!wizardTargetDate && !outfitName.trim())}
-                            className="flex-1 px-4 py-2 rounded-full text-sm text-white"
+                            className="flex-1 px-5 h-12 rounded-full text-sm font-bold text-white"
                             style={{ background: COLORS.rose, opacity: (selectedIds.length === 0 || (!wizardTargetDate && !outfitName.trim())) ? 0.4 : 1 }}
                           >
                             {wizardTargetDate ? `Planifier pour ${wizardTargetDate === todayKey() ? "aujourd'hui" : "demain"}` : wizardFromOutfitId ? "Voir la tenue" : "Ajouter à mes tenues"}
@@ -4684,16 +4813,16 @@ export default function App() {
 
                     <div className="flex gap-2">
                       {!isFirst && (
-                        <button onClick={wizardBack} className="flex items-center gap-1 px-4 py-2 rounded-full text-sm" style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}>
+                        <button onClick={wizardBack} className="flex items-center gap-1 px-5 h-12 rounded-full text-sm font-bold" style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}>
                           <ArrowLeft size={14} /> Précédent
                         </button>
                       )}
                       {!isLast ? (
-                        <button onClick={wizardNext} className="flex-1 px-4 py-2 rounded-full text-sm text-white" style={{ background: COLORS.rose }}>
+                        <button onClick={wizardNext} className="flex-1 px-5 h-12 rounded-full text-sm font-bold text-white" style={{ background: COLORS.rose }}>
                           Suivant
                         </button>
                       ) : (
-                        <button onClick={wizardGenerate} className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm text-white" style={{ background: COLORS.rose }}>
+                        <button onClick={wizardGenerate} className="flex-1 flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold text-white" style={{ background: COLORS.rose }}>
                           <Sparkles size={14} /> Générer la tenue
                         </button>
                       )}
@@ -4749,7 +4878,7 @@ export default function App() {
                   <button
                     onClick={confirmCrop}
                     disabled={uploadingPhoto}
-                    className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm text-white"
+                    className="w-full flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold text-white"
                     style={{ background: COLORS.rose, opacity: uploadingPhoto ? 0.6 : 1 }}
                   >
                     {uploadingPhoto ? "Envoi en cours..." : "Valider le recadrage"}
@@ -4929,7 +5058,7 @@ export default function App() {
                           setShowQuickPlanModal(false);
                         }}
                         disabled={planItemIds.length === 0}
-                        className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm text-white"
+                        className="w-full flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold text-white"
                         style={{ background: COLORS.rose, opacity: planItemIds.length === 0 ? 0.4 : 1 }}
                       >
                         <Plus size={16} /> Enregistrer
@@ -4940,6 +5069,25 @@ export default function App() {
               </div>
             )}
       </div>
+
+      {/* ── Petit message de confirmation ── */}
+      {toast && (
+        <div
+          className="fixed flex items-center gap-2.5"
+          style={{ left: 16, right: 16, bottom: "calc(80px + env(safe-area-inset-bottom, 0px))", maxWidth: 440, margin: "0 auto", padding: "12px 16px", borderRadius: 16, background: COLORS.ink, color: "#FFFFFF", boxShadow: "0 8px 20px rgba(0,0,0,0.25)", zIndex: 46, animation: "navLabelIn 0.2s ease-out" }}
+        >
+          <Check size={18} color={COLORS.rose} strokeWidth={2.4} />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm truncate" style={{ fontWeight: 700 }}>{toast.text}</p>
+            {toast.sub && <p className="text-xs" style={{ opacity: 0.7 }}>{toast.sub}</p>}
+          </div>
+          {toast.action && (
+            <button type="button" onClick={() => { toast.onAction(); setToast(null); }} className="text-sm" style={{ color: COLORS.rose, fontWeight: 700 }}>
+              {toast.action}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* ── Menu du "+" : 4 bulles en éventail au-dessus du bouton ── */}
       {showAddMenu && (
