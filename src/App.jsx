@@ -2516,27 +2516,27 @@ export default function App() {
   }
 
   if (!loaded || !splashDone) {
+    // Écran d'ouverture : fond blanc, tout en corail, "pli" en grand qui se replie à la taille de l'icône,
+    // puis le contour et la vague se dessinent ensemble. Joué une fois, ~1,9 s.
     return (
-      <div style={{ background: "#FFFFFF", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div className="splash-screen" style={{ background: "#FFFFFF", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
         <style>{`
           @import url('https://fonts.googleapis.com/css2?family=Karla:wght@400;500;600;700&family=Merriweather:ital,wght@0,400;0,700;1,400;1,700&display=swap');
-          @keyframes splashIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to   { opacity: 1; transform: translateY(0); }
-          }
-          @keyframes logoIn {
-            from { opacity: 0; transform: scale(0.7); }
-            to   { opacity: 1; transform: scale(1); }
-          }
-          .splash-mark  { animation: logoIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards; opacity: 0; }
-          .splash-logo { animation: splashIn 0.7s ease-out 0.25s forwards; opacity: 0; }
-          .splash-tag   { animation: splashIn 0.7s ease-out 0.4s forwards; opacity: 0; }
+          @keyframes splashTxt { 0% { opacity: 0; transform: scale(2.6); } 15%, 40% { opacity: 1; transform: scale(2.6); } 70%, 100% { opacity: 1; transform: scale(1); } }
+          @keyframes splashDraw { 0%, 60% { stroke-dashoffset: 101; } 90%, 100% { stroke-dashoffset: 0; } }
+          @keyframes splashOut { 0%, 85% { opacity: 1; } 100% { opacity: 0; } }
+          .splash-screen { animation: splashOut 1.9s ease-in forwards; }
+          .splash-txt { animation: splashTxt 1.5s cubic-bezier(.7,0,.3,1) forwards; transform-box: fill-box; transform-origin: center; }
+          .splash-draw { stroke-dasharray: 101 101; stroke-dashoffset: 101; animation: splashDraw 1.5s ease-in-out forwards; }
         `}</style>
-        <div style={{ textAlign: "center", fontFamily: "Karla, sans-serif" }}>
-          <div className="splash-mark" style={{ display: "flex", justifyContent: "center" }}>
-            <PliLogo size={96} />
-          </div>
-        </div>
+        <svg viewBox="0 0 100 100" width="140" height="140" style={{ overflow: "visible" }} aria-label="pli">
+          <rect className="splash-draw" pathLength="100" x="1.5" y="1.5" width="97" height="97" rx="22" fill="none" stroke="#FF4B33" strokeWidth="3" />
+          <defs><clipPath id="splash-clip"><rect width="100" height="100" rx="22.5" /></clipPath></defs>
+          <g clipPath="url(#splash-clip)">
+            <path className="splash-draw" pathLength="100" transform="translate(100,0) scale(-1,1)" d="M-4 46 Q8 52 10 62 T26 74 T40 90 T54 104" fill="none" stroke="#FF4B33" strokeWidth="5" strokeLinecap="round" />
+          </g>
+          <text className="splash-txt" x="44" y="52" textAnchor="middle" fill="#FF4B33" style={{ fontFamily: "'Merriweather', serif", fontWeight: 700, fontStyle: "italic", fontSize: 40 }}>pli</text>
+        </svg>
       </div>
     );
   }
