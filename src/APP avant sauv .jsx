@@ -1709,77 +1709,6 @@ export default function App() {
     }
   }
 
-  // ── SAUVEGARDE / RESTAURATION ──
-  // Tout ce qui est rangé sur ce téléphone (vêtements, tenues, agenda…) dans un seul fichier.
-  // Les photos sont déjà en ligne (Supabase) : le fichier contient seulement leurs liens.
-  async function exportBackup() {
-    const data = {
-      app: "mon-armoire",
-      version: 1,
-      savedAt: new Date().toISOString(),
-      userName,
-      items,
-      outfits,
-      agenda,
-      rediscoverHidden,
-    };
-    const stamp = new Date().toISOString().slice(0, 10);
-    const fileName = `mon-armoire-sauvegarde-${stamp}.json`;
-    const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
-    // Sur iPhone, le plus fiable est la feuille de partage ("Enregistrer dans Fichiers").
-    try {
-      const file = new File([blob], fileName, { type: "application/json" });
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title: "Sauvegarde Mon Armoire" });
-        return;
-      }
-    } catch (err) {
-      if (err && err.name === "AbortError") return; // partage annulé
-    }
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
-  }
-
-  // Recharge un fichier de sauvegarde (remplace les données de cet appareil, après confirmation).
-  function importBackup(e) {
-    const file = e.target.files && e.target.files[0];
-    e.target.value = "";
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      let data;
-      try { data = JSON.parse(reader.result); } catch { data = null; }
-      if (!data || data.app !== "mon-armoire" || !Array.isArray(data.items)) {
-        alert("Ce fichier n'est pas une sauvegarde Mon Armoire.");
-        return;
-      }
-      const when = data.savedAt ? new Date(data.savedAt).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" }) : "?";
-      const ok = window.confirm(
-        `Restaurer la sauvegarde du ${when} ?\n\n${data.items.length} vêtements, ${(data.outfits || []).length} tenues.\n\nCe qui est actuellement sur cet appareil sera remplacé.`
-      );
-      if (!ok) return;
-      setItems(data.items);
-      setOutfits(data.outfits || []);
-      setAgenda(data.agenda || {});
-      if (data.rediscoverHidden) {
-        setRediscoverHidden(data.rediscoverHidden);
-        try { localStorage.setItem("mon-armoire-rediscover-hidden", JSON.stringify(data.rediscoverHidden)); } catch {}
-      }
-      if (data.userName) {
-        localStorage.setItem("mon-armoire-username", data.userName);
-        setUserName(data.userName);
-      }
-      alert("Sauvegarde restaurée ✓");
-    };
-    reader.readAsText(file);
-  }
-
   // ── CARNET : photo de la tenue portée ──
   // Enregistre (ou remplace) la photo portée d'une entrée d'agenda.
   function setEntryWornPhoto(dateStr, entryId, url) {
@@ -2495,17 +2424,6 @@ export default function App() {
               </div>
             )}
 
-
-            {/* ── Sauvegarde, tout en bas, discrète ── */}
-            <div className="flex items-center justify-center gap-5 mt-4 mb-2">
-              <button type="button" onClick={exportBackup} className="text-xs" style={{ color: COLORS.muted, fontWeight: 600 }}>
-                Sauvegarder mes données
-              </button>
-              <label className="text-xs cursor-pointer" style={{ color: COLORS.muted, fontWeight: 600 }}>
-                Restaurer
-                <input type="file" accept="application/json,.json" onChange={importBackup} className="hidden" />
-              </label>
-            </div>
 
             {/* ── Popup "tenue du jour" ── */}
             {openEntryId !== null && (() => {
