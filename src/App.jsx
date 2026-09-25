@@ -303,6 +303,7 @@ export default function App() {
     setCategoryView(null);
     setOutfitGroupView(null);
     setTodaySlide(0);
+    setShowAddMenu(false);
   }
 
   // Détection du glissement au doigt (swipe) : on note où le doigt touche l'écran,
@@ -424,6 +425,8 @@ export default function App() {
   const [dayViewDate, setDayViewDate] = useState(null);
   // Agenda : onglet "Calendrier" ou "Carnet" (les photos des tenues portées).
   const [agendaTab, setAgendaTab] = useState("calendrier");
+  // Menu du bouton "+" central de la barre (éventail).
+  const [showAddMenu, setShowAddMenu] = useState(false);
   // Id de l'entrée d'agenda dont la photo portée est en cours d'envoi ("new" pour une nouvelle).
   const [uploadingWornFor, setUploadingWornFor] = useState(null);
   // Mois ouverts dans l'Agenda (null = par défaut, seul le mois en cours est ouvert).
@@ -2002,6 +2005,15 @@ export default function App() {
     }
   }
 
+  // Ouvre la création d'une tenue (depuis l'onglet Tenues ou le bouton "+").
+  function openCreateOutfit() {
+    setCreateOutfitStep("select");
+    setOutfitTags(EMPTY_OUTFIT_TAGS);
+    setOutfitName(nextOutfitName());
+    setSelectedIds([]);
+    setShowOutfitForm(true);
+  }
+
   // ── SAUVEGARDE / RESTAURATION ──
   // Tout ce qui est rangé sur ce téléphone (vêtements, tenues, agenda…) dans un seul fichier.
   // Les photos sont déjà en ligne (Supabase) : le fichier contient seulement leurs liens.
@@ -2405,6 +2417,10 @@ export default function App() {
         }
         .app-content { animation: appIn 0.4s ease-out; }
         .slide-right { animation: slideFromRight 0.28s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes fanOut { from { opacity: 0; transform: translate(var(--fx), var(--fy)) scale(0.3); } to { opacity: 1; transform: none; } }
+        @keyframes navLabelIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+        .nav-label { animation: navLabelIn 0.2s ease-out; }
         .slide-left  { animation: slideFromLeft 0.28s ease-out; }
         @keyframes wizardSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .wizard-spin { animation: wizardSpin 0.9s linear infinite; display: inline-flex; }
@@ -2414,7 +2430,7 @@ export default function App() {
 
       <div
         className="max-w-3xl mx-auto px-5 pt-10 app-content"
-        style={{ paddingBottom: 100 }}
+        style={{ paddingBottom: 120 }}
       >
         {/* ── EN-TÊTE — uniquement sur la page Aujourd'hui ── */}
         {view === "accueil" && (
@@ -2468,18 +2484,6 @@ export default function App() {
         {/* ══════════════════ VUE ACCUEIL ══════════════════ */}
         {view === "accueil" && (
           <div key={view} className={slideDir === "right" ? "slide-right" : "slide-left"}>
-            {/* Bouton principal de la page : générer une tenue pour aujourd'hui */}
-            {items.length > 0 && (
-              <button
-                type="button"
-                onClick={() => openWizard(todayKey())}
-                aria-label="Générer une tenue pour aujourd'hui"
-                className="flex items-center justify-center rounded-full text-white"
-                style={{ position: "fixed", right: 20, bottom: 84, width: 56, height: 56, background: COLORS.rose, boxShadow: "0 6px 18px rgba(255,75,51,0.35)", zIndex: 30 }}
-              >
-                <Sparkles size={24} />
-              </button>
-            )}
             {/* ── Grande météo : température, matin / midi / soir, et un conseil ── */}
             {weatherStatus === "granted" && weather && (() => {
               const info = getWeatherInfo(weather.dailyCode != null ? weather.dailyCode : weather.code);
@@ -2954,82 +2958,7 @@ export default function App() {
               </div>
             )}
 
-            {/* Bouton flottant "+" pour ajouter un vêtement, au-dessus de la barre de navigation */}
-            <button
-              type="button"
-              onClick={() => setShowAddForm(true)}
-              aria-label="Ajouter un vêtement"
-              className="flex items-center justify-center rounded-full text-white"
-              style={{ position: "fixed", right: 20, bottom: 84, width: 56, height: 56, background: COLORS.rose, boxShadow: "0 6px 18px rgba(255,75,51,0.35)", zIndex: 30 }}
-            >
-              <Plus size={24} />
-            </button>
 
-            {showAddForm && (
-              <div
-                onClick={() => setShowAddForm(false)}
-                className="fixed inset-0 flex items-end justify-center"
-                style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
-              >
-                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
-                  <div className="flex items-center justify-between mb-4">
-                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Ajouter un vêtement</p>
-                    <button onClick={() => setShowAddForm(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
-                      <X size={14} />
-                    </button>
-                  </div>
-                  <form onSubmit={(e) => { addItem(e); setShowAddForm(false); }} className="flex flex-wrap gap-3 items-end">
-                    <div className="flex-1 min-w-[140px]">
-                      <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Nom du vêtement" className="w-full px-4 py-2.5 rounded-xl text-sm" style={{ border: `1px solid ${COLORS.line}`, outline: "none" }} />
-                    </div>
-                    <div>
-                      <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className="px-4 py-2.5 rounded-xl text-sm" style={{ border: `1px solid ${COLORS.line}` }}>
-                        {CATEGORIES.map((c) => <option key={c} value={c}>{catLabel(c)}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="flex items-center justify-center rounded cursor-pointer overflow-hidden" style={{ width: 40, height: 36, border: `1px solid ${COLORS.line}`, background: form.photo ? "transparent" : "#FAFAFA" }}>
-                        {form.photo ? <img src={form.photo} alt="Aperçu" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <Camera size={15} style={{ opacity: 0.4 }} />}
-                        <input type="file" accept="image/*" onChange={handlePhotoChange} className="hidden" />
-                      </label>
-                    </div>
-                    <div>
-                      {(form.extraHexes || []).length > 0 && <span className="inline-flex align-middle mr-1.5">{renderPaletteDots(form.extraHexes, 18)}</span>}
-                      <input type="color" value={form.hex} onChange={(e) => setForm({ ...form, hex: e.target.value })} className="w-10 h-9 rounded cursor-pointer" style={{ border: `1px solid ${COLORS.line}` }} />
-                    </div>
-                    <div className="w-full">
-                      <div className="flex gap-1.5 flex-wrap">
-                        {WEATHER_TAGS.map((w) => (
-                          <button type="button" key={w} onClick={() => toggleFormWeather(w)} className="px-4 h-9 rounded-full text-sm" style={{
-                            background: form.weather.includes(w) ? COLORS.ink : "transparent",
-                            color: form.weather.includes(w) ? "white" : COLORS.ink,
-                            border: `1px solid ${form.weather.includes(w) ? COLORS.ink : COLORS.line}`,
-                          }}>
-                            {w}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="w-full">
-                      <div className="flex gap-1.5 flex-wrap">
-                        {OCCASIONS.map((o) => (
-                          <button type="button" key={o} onClick={() => toggleFormOccasion(o)} className="px-4 h-9 rounded-full text-sm" style={{
-                            background: form.occasions.includes(o) ? COLORS.ink : "transparent",
-                            color: form.occasions.includes(o) ? "white" : COLORS.ink,
-                            border: `1px solid ${form.occasions.includes(o) ? COLORS.ink : COLORS.line}`,
-                          }}>
-                            {o}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <button type="submit" className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm text-white" style={{ background: COLORS.rose }}>
-                      <Plus size={16} /> Ajouter
-                    </button>
-                  </form>
-                </div>
-              </div>
-            )}
 
             {/* Barre de recherche, ouverte avec la loupe */}
             {showSearch && !categoryView && (
@@ -3420,150 +3349,7 @@ export default function App() {
             </div>
             )}
 
-            {/* Bouton principal de la page : générer une tenue */}
-            <button
-              type="button"
-              onClick={() => openWizard()}
-              aria-label="Générer une tenue"
-              className="flex items-center justify-center rounded-full text-white"
-              style={{ position: "fixed", right: 20, bottom: 84, width: 56, height: 56, background: COLORS.rose, boxShadow: "0 6px 18px rgba(255,75,51,0.35)", zIndex: 30 }}
-            >
-              <Sparkles size={24} />
-            </button>
 
-            {showOutfitForm && (
-              <div
-                onClick={() => setShowOutfitForm(false)}
-                className="fixed inset-0 flex items-end justify-center"
-                style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
-              >
-                {/* Panneau qui monte du bas de l'écran */}
-                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-2" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
-                  <div className="flex justify-center mb-2">
-                    <span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} />
-                  </div>
-                  <div className="flex items-center justify-between mb-3">
-                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Créer une tenue</p>
-                    <button type="button" onClick={() => setShowOutfitForm(false)} aria-label="Fermer" className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
-                      <X size={14} />
-                    </button>
-                  </div>
-                  <form onSubmit={saveOutfit}>
-                    {createOutfitStep === "select" && (
-                      <>
-                        {/* Une rangée par catégorie, qui défile sur le côté, comme la Garde-robe.
-                            Les photos ne se chargent qu'en arrivant à l'écran (loading="lazy"). */}
-                        <div className="flex flex-col gap-5 pb-4">
-                          {CATEGORIES.map((cat) => {
-                            const catItems = sortItems(items.filter((i) => i.category === cat), "couleur");
-                            if (catItems.length === 0) return null;
-                            return (
-                              <section key={cat}>
-                                <p className="text-sm mb-2" style={{ fontWeight: 600 }}>
-                                  {CATEGORY_PLURALS[cat] || cat}{" "}
-                                  <span style={{ fontWeight: 400, color: COLORS.muted }}>· {catItems.length}</span>
-                                </p>
-                                <div data-no-swipe className="no-scrollbar -mx-5 px-5 py-1 flex gap-2 overflow-x-auto">
-                                  {catItems.map((item) => {
-                                    const isSelected = selectedIds.includes(item.id);
-                                    return (
-                                      <button
-                                        type="button"
-                                        key={item.id}
-                                        onClick={() => toggleSelected(item.id)}
-                                        aria-label={item.name}
-                                        aria-pressed={isSelected}
-                                        className="relative flex-shrink-0 overflow-hidden"
-                                        style={{ width: 84, height: 84, borderRadius: 14, background: COLORS.haze, boxShadow: isSelected ? `0 0 0 2px ${COLORS.rose}` : "none" }}
-                                      >
-                                        {item.photo ? (
-                                          <img src={thumbOf(item)} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                                        ) : (
-                                          <div style={{ background: item.hex, width: "100%", height: "100%" }} />
-                                        )}
-                                        {isSelected && (
-                                          <span className="absolute w-5 h-5 rounded-full flex items-center justify-center" style={{ top: 5, right: 5, background: COLORS.rose }}>
-                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 7" /></svg>
-                                          </span>
-                                        )}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </section>
-                            );
-                          })}
-                        </div>
-
-                        {/* Bandeau collé en bas : aperçu de la sélection + Suivant */}
-                        <div className="-mx-5 px-5 pt-3 pb-6 flex items-center gap-3" style={{ position: "sticky", bottom: 0, background: "#FFFFFF", borderTop: `1px solid ${COLORS.line}` }}>
-                          {selectedIds.length > 0 && (
-                            <div className="flex flex-shrink-0" style={{ paddingLeft: 8 }}>
-                              {selectedIds.slice(0, 4).map((id) => {
-                                const item = items.find((i) => i.id === id);
-                                if (!item) return null;
-                                return (
-                                  <div key={id} className="overflow-hidden" style={{ width: 40, height: 40, borderRadius: 10, marginLeft: -8, boxShadow: "0 0 0 2px #FFFFFF", background: item.hex }}>
-                                    {item.photo && <img loading="lazy" decoding="async" src={thumbOf(item)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => setCreateOutfitStep("summary")}
-                            disabled={selectedIds.length === 0}
-                            className="flex-1 rounded-full text-white"
-                            style={{ height: 48, background: COLORS.rose, opacity: selectedIds.length === 0 ? 0.4 : 1, fontWeight: 600 }}
-                          >
-                            {selectedIds.length === 0 ? "Choisis tes pièces" : `Suivant · ${selectedIds.length}`}
-                          </button>
-                        </div>
-                      </>
-                    )}
-
-                    {createOutfitStep === "summary" && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => setCreateOutfitStep("select")}
-                          className="flex items-center gap-1.5 text-xs mb-3"
-                          style={{ opacity: 0.6 }}
-                        >
-                          <ArrowLeft size={13} /> Modifier la sélection
-                        </button>
-
-                        <div className="grid grid-cols-3 gap-2 mb-4">
-                          {selectedIds.map((id) => {
-                            const item = items.find((i) => i.id === id);
-                            if (!item) return null;
-                            return (
-                              <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
-                                {item.photo ? (
-                                  <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
-                                ) : (
-                                  <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-
-                        <input value={outfitName} onChange={(e) => setOutfitName(e.target.value)} placeholder="Nom de la tenue" className="w-full px-4 py-2.5 rounded-xl text-sm mb-3" style={{ border: `1px solid ${COLORS.line}`, outline: "none" }} />
-
-                        {renderOutfitTagPicker()}
-
-                        <button type="submit" disabled={!outfitName.trim() || selectedIds.length === 0} className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm text-white" style={{ background: COLORS.rose, opacity: !outfitName.trim() || selectedIds.length === 0 ? 0.4 : 1 }}>
-                          <Plus size={16} /> Enregistrer la tenue
-                        </button>
-                        <div className="h-6" />
-                      </>
-                    )}
-                  </form>
-                </div>
-              </div>
-            )}
 
             {!detailOutfitId && (
             <>
@@ -3792,27 +3578,6 @@ export default function App() {
 
             {items.length === 0 && (
               <p className="text-sm mb-5" style={{ color: COLORS.muted }}>Ajoute d'abord des vêtements.</p>
-            )}
-
-            {agendaTab === "carnet" ? (
-              <label
-                aria-label="Ajouter la photo de ta tenue du jour"
-                className="flex items-center justify-center rounded-full text-white cursor-pointer"
-                style={{ position: "fixed", right: 20, bottom: 84, width: 56, height: 56, background: COLORS.rose, boxShadow: "0 6px 18px rgba(255,75,51,0.35)", zIndex: 30, opacity: uploadingWornFor ? 0.6 : 1 }}
-              >
-                <Camera size={24} />
-                <input type="file" accept="image/*" onChange={(ev) => handleWornPhoto(ev, todayKey(), null)} className="hidden" />
-              </label>
-            ) : items.length > 0 && (
-              <button
-                type="button"
-                onClick={() => openQuickPlan(todayKey())}
-                aria-label="Planifier une tenue"
-                className="flex items-center justify-center rounded-full text-white"
-                style={{ position: "fixed", right: 20, bottom: 84, width: 56, height: 56, background: COLORS.rose, boxShadow: "0 6px 18px rgba(255,75,51,0.35)", zIndex: 30 }}
-              >
-                <Plus size={24} />
-              </button>
             )}
 
             {agendaTab === "carnet" && (() => {
@@ -4067,6 +3832,207 @@ export default function App() {
             })()}
           </div>
         )}
+            {/* ── Formulaires d'ajout (vêtement, tenue) : globaux, ils s'ouvrent par-dessus la page en cours ── */}
+            {showAddForm && (
+              <div
+                onClick={() => setShowAddForm(false)}
+                className="fixed inset-0 flex items-end justify-center"
+                style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
+              >
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                  <div className="flex items-center justify-between mb-4">
+                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Ajouter un vêtement</p>
+                    <button onClick={() => setShowAddForm(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <form onSubmit={(e) => { addItem(e); setShowAddForm(false); }} className="flex flex-wrap gap-3 items-end">
+                    <div className="flex-1 min-w-[140px]">
+                      <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Nom du vêtement" className="w-full px-4 py-2.5 rounded-xl text-sm" style={{ border: `1px solid ${COLORS.line}`, outline: "none" }} />
+                    </div>
+                    <div>
+                      <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className="px-4 py-2.5 rounded-xl text-sm" style={{ border: `1px solid ${COLORS.line}` }}>
+                        {CATEGORIES.map((c) => <option key={c} value={c}>{catLabel(c)}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="flex items-center justify-center rounded cursor-pointer overflow-hidden" style={{ width: 40, height: 36, border: `1px solid ${COLORS.line}`, background: form.photo ? "transparent" : "#FAFAFA" }}>
+                        {form.photo ? <img src={form.photo} alt="Aperçu" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <Camera size={15} style={{ opacity: 0.4 }} />}
+                        <input type="file" accept="image/*" onChange={handlePhotoChange} className="hidden" />
+                      </label>
+                    </div>
+                    <div>
+                      {(form.extraHexes || []).length > 0 && <span className="inline-flex align-middle mr-1.5">{renderPaletteDots(form.extraHexes, 18)}</span>}
+                      <input type="color" value={form.hex} onChange={(e) => setForm({ ...form, hex: e.target.value })} className="w-10 h-9 rounded cursor-pointer" style={{ border: `1px solid ${COLORS.line}` }} />
+                    </div>
+                    <div className="w-full">
+                      <div className="flex gap-1.5 flex-wrap">
+                        {WEATHER_TAGS.map((w) => (
+                          <button type="button" key={w} onClick={() => toggleFormWeather(w)} className="px-4 h-9 rounded-full text-sm" style={{
+                            background: form.weather.includes(w) ? COLORS.ink : "transparent",
+                            color: form.weather.includes(w) ? "white" : COLORS.ink,
+                            border: `1px solid ${form.weather.includes(w) ? COLORS.ink : COLORS.line}`,
+                          }}>
+                            {w}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="w-full">
+                      <div className="flex gap-1.5 flex-wrap">
+                        {OCCASIONS.map((o) => (
+                          <button type="button" key={o} onClick={() => toggleFormOccasion(o)} className="px-4 h-9 rounded-full text-sm" style={{
+                            background: form.occasions.includes(o) ? COLORS.ink : "transparent",
+                            color: form.occasions.includes(o) ? "white" : COLORS.ink,
+                            border: `1px solid ${form.occasions.includes(o) ? COLORS.ink : COLORS.line}`,
+                          }}>
+                            {o}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <button type="submit" className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm text-white" style={{ background: COLORS.rose }}>
+                      <Plus size={16} /> Ajouter
+                    </button>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {showOutfitForm && (
+              <div
+                onClick={() => setShowOutfitForm(false)}
+                className="fixed inset-0 flex items-end justify-center"
+                style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
+              >
+                {/* Panneau qui monte du bas de l'écran */}
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-2" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
+                  <div className="flex justify-center mb-2">
+                    <span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} />
+                  </div>
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Créer une tenue</p>
+                    <button type="button" onClick={() => setShowOutfitForm(false)} aria-label="Fermer" className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <form onSubmit={saveOutfit}>
+                    {createOutfitStep === "select" && (
+                      <>
+                        {/* Une rangée par catégorie, qui défile sur le côté, comme la Garde-robe.
+                            Les photos ne se chargent qu'en arrivant à l'écran (loading="lazy"). */}
+                        <div className="flex flex-col gap-5 pb-4">
+                          {CATEGORIES.map((cat) => {
+                            const catItems = sortItems(items.filter((i) => i.category === cat), "couleur");
+                            if (catItems.length === 0) return null;
+                            return (
+                              <section key={cat}>
+                                <p className="text-sm mb-2" style={{ fontWeight: 600 }}>
+                                  {CATEGORY_PLURALS[cat] || cat}{" "}
+                                  <span style={{ fontWeight: 400, color: COLORS.muted }}>· {catItems.length}</span>
+                                </p>
+                                <div data-no-swipe className="no-scrollbar -mx-5 px-5 py-1 flex gap-2 overflow-x-auto">
+                                  {catItems.map((item) => {
+                                    const isSelected = selectedIds.includes(item.id);
+                                    return (
+                                      <button
+                                        type="button"
+                                        key={item.id}
+                                        onClick={() => toggleSelected(item.id)}
+                                        aria-label={item.name}
+                                        aria-pressed={isSelected}
+                                        className="relative flex-shrink-0 overflow-hidden"
+                                        style={{ width: 84, height: 84, borderRadius: 14, background: COLORS.haze, boxShadow: isSelected ? `0 0 0 2px ${COLORS.rose}` : "none" }}
+                                      >
+                                        {item.photo ? (
+                                          <img src={thumbOf(item)} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                                        ) : (
+                                          <div style={{ background: item.hex, width: "100%", height: "100%" }} />
+                                        )}
+                                        {isSelected && (
+                                          <span className="absolute w-5 h-5 rounded-full flex items-center justify-center" style={{ top: 5, right: 5, background: COLORS.rose }}>
+                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 7" /></svg>
+                                          </span>
+                                        )}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </section>
+                            );
+                          })}
+                        </div>
+
+                        {/* Bandeau collé en bas : aperçu de la sélection + Suivant */}
+                        <div className="-mx-5 px-5 pt-3 pb-6 flex items-center gap-3" style={{ position: "sticky", bottom: 0, background: "#FFFFFF", borderTop: `1px solid ${COLORS.line}` }}>
+                          {selectedIds.length > 0 && (
+                            <div className="flex flex-shrink-0" style={{ paddingLeft: 8 }}>
+                              {selectedIds.slice(0, 4).map((id) => {
+                                const item = items.find((i) => i.id === id);
+                                if (!item) return null;
+                                return (
+                                  <div key={id} className="overflow-hidden" style={{ width: 40, height: 40, borderRadius: 10, marginLeft: -8, boxShadow: "0 0 0 2px #FFFFFF", background: item.hex }}>
+                                    {item.photo && <img loading="lazy" decoding="async" src={thumbOf(item)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setCreateOutfitStep("summary")}
+                            disabled={selectedIds.length === 0}
+                            className="flex-1 rounded-full text-white"
+                            style={{ height: 48, background: COLORS.rose, opacity: selectedIds.length === 0 ? 0.4 : 1, fontWeight: 600 }}
+                          >
+                            {selectedIds.length === 0 ? "Choisis tes pièces" : `Suivant · ${selectedIds.length}`}
+                          </button>
+                        </div>
+                      </>
+                    )}
+
+                    {createOutfitStep === "summary" && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setCreateOutfitStep("select")}
+                          className="flex items-center gap-1.5 text-xs mb-3"
+                          style={{ opacity: 0.6 }}
+                        >
+                          <ArrowLeft size={13} /> Modifier la sélection
+                        </button>
+
+                        <div className="grid grid-cols-3 gap-2 mb-4">
+                          {selectedIds.map((id) => {
+                            const item = items.find((i) => i.id === id);
+                            if (!item) return null;
+                            return (
+                              <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
+                                {item.photo ? (
+                                  <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
+                                ) : (
+                                  <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <input value={outfitName} onChange={(e) => setOutfitName(e.target.value)} placeholder="Nom de la tenue" className="w-full px-4 py-2.5 rounded-xl text-sm mb-3" style={{ border: `1px solid ${COLORS.line}`, outline: "none" }} />
+
+                        {renderOutfitTagPicker()}
+
+                        <button type="submit" disabled={!outfitName.trim() || selectedIds.length === 0} className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm text-white" style={{ background: COLORS.rose, opacity: !outfitName.trim() || selectedIds.length === 0 ? 0.4 : 1 }}>
+                          <Plus size={16} /> Enregistrer la tenue
+                        </button>
+                        <div className="h-6" />
+                      </>
+                    )}
+                  </form>
+                </div>
+              </div>
+            )}
+
             {/* ── Popup synchro ── */}
             {showSyncSheet && (
               <div
@@ -4867,15 +4833,77 @@ export default function App() {
             )}
       </div>
 
-      {/* ── Barre de navigation flottante, fixée en bas de l'écran ── */}
-      <div style={{ position: "fixed", bottom: 14, left: 0, right: 0, display: "flex", justifyContent: "center", zIndex: 40 }}>
-        <div style={{ display: "flex", background: "#111111", borderRadius: 999, padding: "6px 8px", gap: 4, boxShadow: "0 6px 16px rgba(0,0,0,0.18)" }}>
+      {/* ── Menu du "+" : 4 bulles en éventail au-dessus du bouton ── */}
+      {showAddMenu && (
+        <div onClick={() => setShowAddMenu(false)} className="fixed inset-0" style={{ background: "rgba(17,17,17,0.35)", zIndex: 44, animation: "fadeIn 0.15s ease-out" }}>
+          {[
+            { key: "vetement", label: "Un vêtement", Icon: Shirt, dx: -116, dy: 100, onClick: () => setShowAddForm(true) },
+            { key: "tenue", label: "Une tenue", Icon: Layers, dx: -44, dy: 162, onClick: () => openCreateOutfit() },
+            { key: "suggere", label: "Me suggérer", Icon: Sparkles, dx: 44, dy: 162, accent: true, onClick: () => { setShowAddMenu(false); openWizard(todayKey()); } },
+            { key: "photo", label: "Photo du jour", Icon: Camera, dx: 116, dy: 100, photo: true },
+          ].map((a, idx) => {
+            const bubble = (
+              <>
+                <span className="flex items-center justify-center rounded-full" style={{ width: 56, height: 56, background: a.accent ? COLORS.rose : "#FFFFFF", boxShadow: "0 6px 16px rgba(0,0,0,0.18)" }}>
+                  <a.Icon size={24} color={a.accent ? "#FFFFFF" : COLORS.ink} strokeWidth={1.9} />
+                </span>
+                <span className="text-xs" style={{ fontWeight: 700, color: "#FFFFFF", whiteSpace: "nowrap", padding: "2px 8px", borderRadius: 10, background: "rgba(17,17,17,0.6)" }}>{a.label}</span>
+              </>
+            );
+            const style = {
+              position: "fixed",
+              left: `calc(50% + ${a.dx}px - 40px)`,
+              bottom: `calc(${37 + a.dy - 28 - 6 - 22}px + env(safe-area-inset-bottom, 0px))`,
+              width: 80,
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
+              animation: `fanOut 0.28s cubic-bezier(0.34, 1.56, 0.64, 1) ${idx * 0.03}s both`,
+              "--fx": `${-a.dx}px`, "--fy": `${a.dy}px`,
+            };
+            return a.photo ? (
+              <label key={a.key} onClick={(e) => e.stopPropagation()} style={style} className="cursor-pointer">
+                {bubble}
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(ev) => { handleWornPhoto(ev, todayKey(), null); setShowAddMenu(false); }}
+                />
+              </label>
+            ) : (
+              <button key={a.key} type="button" onClick={(e) => { e.stopPropagation(); a.onClick(); setShowAddMenu(false); }} style={style}>
+                {bubble}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Barre de navigation fixe, claire, collée en bas : 4 onglets + le "+" au centre ── */}
+      <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, background: "#FFFFFF", borderTop: `1px solid ${COLORS.line}`, paddingBottom: "env(safe-area-inset-bottom, 0px)", zIndex: 45 }}>
+        <div style={{ maxWidth: 480, margin: "0 auto", height: 56, display: "flex", alignItems: "center", padding: "0 4px" }}>
           {[
             { key: "accueil", label: "Aujourd'hui", Icon: Sun },
             { key: "dressing", label: "Garde-robe", Icon: Shirt },
+            { key: "plus" },
             { key: "tenues", label: "Tenues", Icon: Layers },
             { key: "agenda", label: "Agenda", Icon: Calendar },
           ].map(({ key, label, Icon }) => {
+            if (key === "plus") {
+              return (
+                <div key="plus" style={{ flex: 1, display: "flex", justifyContent: "center" }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddMenu((v) => !v)}
+                    aria-label={showAddMenu ? "Fermer le menu" : "Ajouter"}
+                    aria-expanded={showAddMenu}
+                    className="flex items-center justify-center rounded-full"
+                    style={{ width: 46, height: 46, marginTop: -18, background: COLORS.rose, border: "4px solid #FFFFFF", boxShadow: "0 3px 10px rgba(255,75,51,0.35)", boxSizing: "content-box", transition: "transform 0.25s", transform: showAddMenu ? "rotate(45deg)" : "none" }}
+                  >
+                    <Plus size={24} color="#FFFFFF" strokeWidth={2.4} />
+                  </button>
+                </div>
+              );
+            }
             const active = view === key;
             return (
               <button
@@ -4883,20 +4911,15 @@ export default function App() {
                 onClick={() => changeView(key)}
                 aria-label={label}
                 aria-current={active ? "page" : undefined}
-                className="flex items-center justify-center"
-                style={{
-                  // Onglet actif : icône + nom dans une pastille corail. Les autres : icône seule.
-                  height: 44,
-                  minWidth: 44,
-                  padding: active ? "0 16px 0 13px" : "0 12px",
-                  gap: 6,
-                  borderRadius: 999,
-                  background: active ? COLORS.ink : "transparent",
-                  transition: "background 0.2s, padding 0.2s",
-                }}
+                style={{ flex: 1, height: 56, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}
               >
-                <Icon size={18} color={active ? "white" : "#AAAAAA"} />
-                {active && <span style={{ fontSize: 13, fontWeight: 600, color: "white", whiteSpace: "nowrap" }}>{label}</span>}
+                <Icon size={20} color={active ? COLORS.ink : "#AAAAAA"} strokeWidth={1.8} />
+                {active && (
+                  <>
+                    <span className="nav-label" style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.ink, whiteSpace: "nowrap" }}>{label}</span>
+                    <span style={{ width: 4, height: 4, borderRadius: 2, background: COLORS.rose }} />
+                  </>
+                )}
               </button>
             );
           })}
