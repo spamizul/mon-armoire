@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Plus, X, Pencil, ChevronDown, Shirt, Layers, Sparkles, Camera, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Cloud, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
+import { Plus, X, Pencil, ChevronDown, Shirt, Layers, Sparkles, Camera, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Cloud, CloudOff, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
 import Cropper from "react-easy-crop";
 import { supabase } from "./supabaseClient";
 
@@ -213,6 +213,30 @@ const ALL_SORTS = [...CATEGORY_SORTS, { id: "mois", label: "Portées ce mois-ci"
 // L'ordre des onglets détermine le sens du glissement : passer de "dressing"
 // à "tenues" glisse vers la gauche, l'inverse glisse vers la droite.
 const TAB_ORDER = ["accueil", "dressing", "tenues", "agenda"];
+
+// ── Synchro : outils ──
+// JSON avec les clés toujours dans le même ordre (Supabase les réordonne),
+// pour pouvoir comparer deux versions des données de façon fiable.
+function stableStringify(v) {
+  if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+  if (v && typeof v === "object") {
+    return "{" + Object.keys(v).filter((k) => v[k] !== undefined).sort().map((k) => JSON.stringify(k) + ":" + stableStringify(v[k])).join(",") + "}";
+  }
+  return JSON.stringify(v === undefined ? null : v);
+}
+// Petite empreinte d'un texte : si elle change, les données ont changé.
+function hashString(str) {
+  let h1 = 5381, h2 = 52711;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    h1 = (h1 * 33) ^ c;
+    h2 = (h2 * 33) ^ c;
+  }
+  return str.length + "-" + (h1 >>> 0).toString(36) + (h2 >>> 0).toString(36);
+}
+function sameTime(a, b) {
+  return !!a && !!b && new Date(a).getTime() === new Date(b).getTime();
+}
 
 function getGreeting(name) {
   const hour = new Date().getHours();
@@ -463,6 +487,261 @@ export default function App() {
       alert("Le stockage de ton téléphone est plein (souvent à cause de trop de photos). Essaie de retirer une photo ou un vêtement pour libérer de la place.");
     }
   }, [agenda, loaded]);
+
+  // ── SYNCHRO EN LIGNE (Supabase) ──────────────
+  // Principe : ce téléphone garde TOUJOURS sa copie (localStorage), l'appli marche hors ligne.
+  // Chaque changement est envoyé en ligne ~1,5 s après. À l'ouverture (et quand on revient
+  // sur l'appli), on regarde s'il y a plus récent en ligne. Si les deux ont changé en même
+  // temps, on demande quoi garder au lieu d'écraser en silence.
+  const readLS = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+  const [syncCode, setSyncCode] = useState(() => readLS("mon-armoire-sync-code"));
+  const syncCodeRef = useRef(syncCode);
+  const [syncStatus, setSyncStatus] = useState(() => (readLS("mon-armoire-sync-code") ? "ok" : "off")); // off | ok | pending | saving | offline | error
+  const [syncedAt, setSyncedAt] = useState(() => readLS("mon-armoire-sync-at"));
+  const syncedAtRef = useRef(syncedAt);
+  const syncedHashRef = useRef(readLS("mon-armoire-sync-hash"));
+  const syncBusy = useRef(false);
+  const pushTimer = useRef(null);
+  const [showSyncSheet, setShowSyncSheet] = useState(false);
+  const [syncSetup, setSyncSetup] = useState({ code: "", step: "code", remote: null, busy: false, error: "" });
+
+  function syncPayload(src) {
+    return {
+      items: src.items || [],
+      outfits: src.outfits || [],
+      agenda: src.agenda || {},
+      userName: src.userName || null,
+      rediscoverHidden: src.rediscoverHidden || {},
+    };
+  }
+  const payloadHash = (p) => hashString(stableStringify(p));
+  const latestPayloadRef = useRef(null);
+  latestPayloadRef.current = syncPayload({ items, outfits, agenda, userName, rediscoverHidden });
+
+  function markSynced(at, hash) {
+    syncedAtRef.current = at;
+    syncedHashRef.current = hash;
+    setSyncedAt(at);
+    try {
+      localStorage.setItem("mon-armoire-sync-at", at);
+      localStorage.setItem("mon-armoire-sync-hash", hash);
+    } catch {}
+  }
+
+  // Garde-fou : on n'accepte que des données qui ressemblent vraiment à Mon Armoire.
+  function isValidRemote(d) {
+    return d && Array.isArray(d.items) && Array.isArray(d.outfits || []) && typeof (d.agenda || {}) === "object";
+  }
+
+  // Remplace les données de cet appareil par celles venues d'en ligne. Renvoie leur empreinte.
+  function applyRemote(d) {
+    const p = syncPayload(d);
+    setItems(p.items);
+    setOutfits(p.outfits);
+    setAgenda(p.agenda);
+    setRediscoverHidden(p.rediscoverHidden);
+    try { localStorage.setItem("mon-armoire-rediscover-hidden", JSON.stringify(p.rediscoverHidden)); } catch {}
+    if (p.userName) {
+      try { localStorage.setItem("mon-armoire-username", p.userName); } catch {}
+      setUserName(p.userName);
+    }
+    return payloadHash(p);
+  }
+
+  // Les deux versions ont changé : on demande laquelle garder.
+  async function resolveConflict(remote) {
+    const local = latestPayloadRef.current;
+    const keepLocal = window.confirm(
+      `Tes données ont changé sur un autre appareil ET sur celui-ci.\n\n` +
+      `OK : garder celles de CET appareil (${local.items.length} vêtements, ${local.outfits.length} tenues).\n` +
+      `Annuler : prendre celles de l'autre appareil (${remote.data.items.length} vêtements, ${(remote.data.outfits || []).length} tenues).`
+    );
+    if (keepLocal) {
+      const hash = payloadHash(local);
+      const { data, error } = await supabase.rpc("armoire_set", { p_code: syncCodeRef.current, p_data: local, p_base: null, p_force: true });
+      if (error) throw error;
+      markSynced(data, hash);
+    } else {
+      markSynced(remote.updated_at, applyRemote(remote.data));
+    }
+    setSyncStatus("ok");
+  }
+
+  // Envoie la version de cet appareil en ligne.
+  async function pushNow() {
+    const code = syncCodeRef.current;
+    if (!code) return;
+    if (syncBusy.current) { clearTimeout(pushTimer.current); pushTimer.current = setTimeout(pushNow, 1000); return; }
+    const payload = latestPayloadRef.current;
+    const hash = payloadHash(payload);
+    if (hash === syncedHashRef.current) { setSyncStatus("ok"); return; }
+    // Garde-fou : jamais d'envoi automatique d'une armoire vide (ça effacerait tout en ligne).
+    if (payload.items.length === 0) { setSyncStatus("ok"); return; }
+    if (!navigator.onLine) { setSyncStatus("offline"); return; }
+    syncBusy.current = true;
+    setSyncStatus("saving");
+    try {
+      const { data, error } = await supabase.rpc("armoire_set", { p_code: code, p_data: payload, p_base: syncedAtRef.current, p_force: false });
+      if (error) {
+        if (String(error.message || "").includes("conflict")) {
+          const got = await supabase.rpc("armoire_get", { p_code: code });
+          if (got.error || !got.data || !isValidRemote(got.data.data)) throw got.error || new Error("bad remote");
+          await resolveConflict(got.data);
+        } else {
+          throw error;
+        }
+      } else {
+        markSynced(data, hash);
+        setSyncStatus("ok");
+      }
+    } catch (err) {
+      setSyncStatus(navigator.onLine ? "error" : "offline");
+    } finally {
+      syncBusy.current = false;
+    }
+    // Des changements faits pendant l'envoi ? On renvoie.
+    if (syncCodeRef.current && payloadHash(latestPayloadRef.current) !== syncedHashRef.current) {
+      clearTimeout(pushTimer.current);
+      pushTimer.current = setTimeout(pushNow, 800);
+    }
+  }
+
+  // Regarde s'il y a plus récent en ligne.
+  async function pullNow() {
+    const code = syncCodeRef.current;
+    if (!code) return;
+    if (!navigator.onLine) { setSyncStatus("offline"); return; }
+    if (syncBusy.current) return;
+    syncBusy.current = true;
+    let needPush = false;
+    try {
+      const { data, error } = await supabase.rpc("armoire_get", { p_code: code });
+      if (error) throw error;
+      const localChanged = payloadHash(latestPayloadRef.current) !== syncedHashRef.current;
+      if (!data) {
+        needPush = true; // rien en ligne pour ce code : on y met la version de cet appareil
+      } else if (sameTime(data.updated_at, syncedAtRef.current)) {
+        needPush = localChanged; // rien de neuf en ligne
+        if (!localChanged) setSyncStatus("ok");
+      } else if (!isValidRemote(data.data)) {
+        setSyncStatus("error");
+      } else if (!localChanged) {
+        markSynced(data.updated_at, applyRemote(data.data));
+        setSyncStatus("ok");
+      } else {
+        await resolveConflict(data);
+      }
+    } catch (err) {
+      setSyncStatus(navigator.onLine ? "error" : "offline");
+    } finally {
+      syncBusy.current = false;
+    }
+    if (needPush) pushNow();
+  }
+
+  // Chaque changement → envoi en ligne 1,5 s plus tard (on regroupe les changements rapprochés).
+  useEffect(() => {
+    if (!loaded || !syncCode) return;
+    if (payloadHash(latestPayloadRef.current) === syncedHashRef.current) return;
+    setSyncStatus("pending");
+    clearTimeout(pushTimer.current);
+    pushTimer.current = setTimeout(pushNow, 1500);
+  }, [items, outfits, agenda, userName, rediscoverHidden, loaded, syncCode]);
+
+  // À l'ouverture, au retour sur l'appli et au retour du réseau : on vérifie en ligne.
+  useEffect(() => {
+    if (!loaded || !syncCode) return;
+    pullNow();
+    const onVisible = () => { if (document.visibilityState === "visible") pullNow(); };
+    const onOnline = () => pullNow();
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("online", onOnline);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", onOnline);
+    };
+  }, [loaded, syncCode]);
+
+  function enableSync(code) {
+    syncCodeRef.current = code;
+    try { localStorage.setItem("mon-armoire-sync-code", code); } catch {}
+    setSyncCode(code);
+  }
+
+  function disableSync() {
+    clearTimeout(pushTimer.current);
+    syncCodeRef.current = null;
+    syncedAtRef.current = null;
+    syncedHashRef.current = null;
+    ["mon-armoire-sync-code", "mon-armoire-sync-at", "mon-armoire-sync-hash"].forEach((k) => { try { localStorage.removeItem(k); } catch {} });
+    setSyncCode(null);
+    setSyncedAt(null);
+    setSyncStatus("off");
+  }
+
+  // Première mise en route sur un appareil : on vérifie le code, puis on voit ce qu'il y a en ligne.
+  async function startSyncSetup() {
+    const code = syncSetup.code.trim();
+    if (code.length < 8) { setSyncSetup((s) => ({ ...s, error: "8 caractères minimum." })); return; }
+    setSyncSetup((s) => ({ ...s, busy: true, error: "" }));
+    try {
+      const { data, error } = await supabase.rpc("armoire_get", { p_code: code });
+      if (error) throw error;
+      const local = latestPayloadRef.current;
+      if (!data) {
+        // Nouveau code : on envoie les données de cet appareil.
+        const { data: at, error: e2 } = await supabase.rpc("armoire_set", { p_code: code, p_data: local, p_base: null, p_force: false });
+        if (e2) throw e2;
+        markSynced(at, payloadHash(local));
+        enableSync(code);
+        setSyncStatus("ok");
+        setSyncSetup({ code: "", step: "done", remote: null, busy: false, error: "" });
+      } else if (!isValidRemote(data.data)) {
+        setSyncSetup((s) => ({ ...s, busy: false, error: "Les données en ligne semblent abîmées. Rien n'a été modifié." }));
+      } else if (local.items.length === 0) {
+        // Appareil vide : on récupère simplement ce qui est en ligne.
+        markSynced(data.updated_at, applyRemote(data.data));
+        enableSync(code);
+        setSyncStatus("ok");
+        setSyncSetup({ code: "", step: "done", remote: null, busy: false, error: "" });
+      } else {
+        setSyncSetup((s) => ({ ...s, busy: false, step: "choose", remote: data }));
+      }
+    } catch (err) {
+      setSyncSetup((s) => ({ ...s, busy: false, error: "Impossible de joindre Supabase. Vérifie ta connexion (et que le code SQL a bien été lancé)." }));
+    }
+  }
+
+  // Les deux ont des données : l'utilisatrice choisit laquelle garder.
+  async function finishSyncSetup(keep) {
+    const code = syncSetup.code.trim();
+    const remote = syncSetup.remote;
+    setSyncSetup((s) => ({ ...s, busy: true, error: "" }));
+    try {
+      if (keep === "remote") {
+        markSynced(remote.updated_at, applyRemote(remote.data));
+      } else {
+        const local = latestPayloadRef.current;
+        const { data: at, error } = await supabase.rpc("armoire_set", { p_code: code, p_data: local, p_base: null, p_force: true });
+        if (error) throw error;
+        markSynced(at, payloadHash(local));
+      }
+      enableSync(code);
+      setSyncStatus("ok");
+      setSyncSetup({ code: "", step: "done", remote: null, busy: false, error: "" });
+    } catch (err) {
+      setSyncSetup((s) => ({ ...s, busy: false, error: "L'envoi a échoué. Rien n'a été perdu, réessaie." }));
+    }
+  }
+
+  function formatSyncTime(at) {
+    if (!at) return "";
+    const d = new Date(at);
+    const sameDay = d.toDateString() === new Date().toDateString();
+    return sameDay
+      ? `à ${d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`
+      : `le ${d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}`;
+  }
 
   // Crée en arrière-plan, une seule fois, les miniatures des vêtements ajoutés avant
   // cette amélioration. Une photo à la fois, sans bloquer l'appli ; en cas d'échec
@@ -2143,6 +2422,9 @@ export default function App() {
                     <p className="text-sm truncate" style={{ color: "#666666" }}>
                       {formatShortToday()}
                     </p>
+                    {(syncStatus === "error" || syncStatus === "offline") && (
+                      <CloudOff size={14} color={COLORS.rose} aria-label="Pas encore enregistré en ligne" />
+                    )}
                   </div>
                   {palette.length > 0 && (
                     <div className="flex items-center gap-2 flex-shrink-0">
@@ -2496,8 +2778,21 @@ export default function App() {
             )}
 
 
-            {/* ── Sauvegarde, tout en bas, discrète ── */}
-            <div className="flex items-center justify-center gap-5 mt-4 mb-2">
+            {/* ── Synchro + sauvegarde, tout en bas, discrètes ── */}
+            <button
+              type="button"
+              onClick={() => { setSyncSetup({ code: "", step: syncCode ? "info" : "code", remote: null, busy: false, error: "" }); setShowSyncSheet(true); }}
+              className="w-full flex items-center justify-center gap-1.5 text-xs mt-4"
+              style={{ color: syncStatus === "error" || syncStatus === "offline" ? COLORS.rose : COLORS.muted, fontWeight: 600 }}
+            >
+              {syncStatus === "off" ? <Cloud size={13} /> : syncStatus === "error" || syncStatus === "offline" ? <CloudOff size={13} /> : <Cloud size={13} />}
+              {syncStatus === "off" && "Synchroniser téléphone et ordi"}
+              {syncStatus === "ok" && `Synchronisé ✓ ${formatSyncTime(syncedAt)}`}
+              {(syncStatus === "pending" || syncStatus === "saving") && "Enregistrement en ligne…"}
+              {syncStatus === "offline" && "Hors ligne : gardé sur l'appareil, envoi au retour du réseau"}
+              {syncStatus === "error" && "Synchro en pause : touche pour voir"}
+            </button>
+            <div className="flex items-center justify-center gap-5 mt-3 mb-2">
               <button type="button" onClick={exportBackup} className="text-xs" style={{ color: COLORS.muted, fontWeight: 600 }}>
                 Sauvegarder mes données
               </button>
@@ -3764,6 +4059,130 @@ export default function App() {
             })()}
           </div>
         )}
+            {/* ── Popup synchro ── */}
+            {showSyncSheet && (
+              <div
+                onClick={() => !syncSetup.busy && setShowSyncSheet(false)}
+                className="fixed inset-0 flex items-end justify-center"
+                style={{ background: "rgba(0,0,0,0.4)", zIndex: 55 }}
+              >
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
+                  <div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Synchro</p>
+                    <button onClick={() => setShowSyncSheet(false)} disabled={syncSetup.busy} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                      <X size={14} />
+                    </button>
+                  </div>
+
+                  {syncSetup.step === "code" && (
+                    <>
+                      <p className="text-sm mb-4" style={{ color: "#555555", lineHeight: 1.5 }}>
+                        Choisis un code secret (8 caractères minimum) et tape le <b>même</b> sur ton téléphone et ton ordi. Tes vêtements, tenues et agenda seront les mêmes partout. Garde-le bien : c'est la clé de tes données.
+                      </p>
+                      <input
+                        type="text"
+                        value={syncSetup.code}
+                        onChange={(e) => setSyncSetup((st) => ({ ...st, code: e.target.value, error: "" }))}
+                        placeholder="ex. armoire-de-lucie-2026"
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        className="w-full px-4 py-3 rounded-xl text-sm mb-3"
+                        style={{ border: `1px solid ${COLORS.line}` }}
+                      />
+                      {syncSetup.error && <p className="text-xs mb-3" style={{ color: COLORS.rose }}>{syncSetup.error}</p>}
+                      <button
+                        type="button"
+                        onClick={startSyncSetup}
+                        disabled={syncSetup.busy}
+                        className="w-full rounded-full text-sm"
+                        style={{ height: 44, background: COLORS.ink, color: "#FFFFFF", fontWeight: 600, opacity: syncSetup.busy ? 0.6 : 1 }}
+                      >
+                        {syncSetup.busy ? "Vérification…" : "Activer la synchro"}
+                      </button>
+                    </>
+                  )}
+
+                  {syncSetup.step === "choose" && syncSetup.remote && (
+                    <>
+                      <p className="text-sm mb-4" style={{ color: "#555555", lineHeight: 1.5 }}>
+                        Il y a déjà des données en ligne pour ce code, et d'autres sur cet appareil. Lesquelles garder ? Les autres seront remplacées.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => finishSyncSetup("remote")}
+                        disabled={syncSetup.busy}
+                        className="w-full text-left p-4 rounded-2xl mb-2"
+                        style={{ background: COLORS.haze }}
+                      >
+                        <p className="text-sm" style={{ fontWeight: 700 }}>Celles en ligne</p>
+                        <p className="text-xs mt-0.5" style={{ color: COLORS.muted }}>
+                          {syncSetup.remote.data.items.length} vêtements · {(syncSetup.remote.data.outfits || []).length} tenues · modifiées {formatSyncTime(syncSetup.remote.updated_at)}
+                        </p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => finishSyncSetup("local")}
+                        disabled={syncSetup.busy}
+                        className="w-full text-left p-4 rounded-2xl mb-3"
+                        style={{ background: COLORS.haze }}
+                      >
+                        <p className="text-sm" style={{ fontWeight: 700 }}>Celles de cet appareil</p>
+                        <p className="text-xs mt-0.5" style={{ color: COLORS.muted }}>
+                          {items.length} vêtements · {outfits.length} tenues
+                        </p>
+                      </button>
+                      {syncSetup.error && <p className="text-xs" style={{ color: COLORS.rose }}>{syncSetup.error}</p>}
+                    </>
+                  )}
+
+                  {syncSetup.step === "done" && (
+                    <>
+                      <p className="text-sm mb-4" style={{ color: "#555555", lineHeight: 1.5 }}>
+                        Synchro activée ✓ Chaque changement part en ligne automatiquement. Tape le même code sur ton autre appareil.
+                      </p>
+                      <button type="button" onClick={() => setShowSyncSheet(false)} className="w-full rounded-full text-sm" style={{ height: 44, background: COLORS.ink, color: "#FFFFFF", fontWeight: 600 }}>
+                        Super
+                      </button>
+                    </>
+                  )}
+
+                  {syncSetup.step === "info" && (
+                    <>
+                      <p className="text-sm mb-1" style={{ fontWeight: 600 }}>
+                        {syncStatus === "ok" && `Tout est enregistré en ligne ✓ (${formatSyncTime(syncedAt)})`}
+                        {(syncStatus === "pending" || syncStatus === "saving") && "Enregistrement en ligne en cours…"}
+                        {syncStatus === "offline" && "Pas de réseau pour l'instant"}
+                        {syncStatus === "error" && "La synchro n'a pas pu se faire"}
+                      </p>
+                      <p className="text-sm mb-4" style={{ color: "#555555", lineHeight: 1.5 }}>
+                        {syncStatus === "ok"
+                          ? "Tes changements partent en ligne automatiquement."
+                          : "Rien n'est perdu : tout est gardé sur cet appareil et partira en ligne dès que possible."}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => { pullNow(); }}
+                        className="w-full rounded-full text-sm mb-3"
+                        style={{ height: 44, background: COLORS.ink, color: "#FFFFFF", fontWeight: 600 }}
+                      >
+                        Synchroniser maintenant
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { if (window.confirm("Arrêter la synchro sur cet appareil ? Tes données restent ici et en ligne.")) { disableSync(); setShowSyncSheet(false); } }}
+                        className="w-full text-center text-xs"
+                        style={{ color: COLORS.muted }}
+                      >
+                        Arrêter la synchro sur cet appareil
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* ── Popup de confirmation avant suppression — globale ── */}
             {confirmDialog && (
               <div
