@@ -207,6 +207,9 @@ const CATEGORY_SORTS = [
   { id: "favoris", label: "Favoris" },
   { id: "jamais", label: "Jamais portés" },
 ];
+// Vue "toutes les pièces" (ouverte depuis les chiffres de la page Aujourd'hui) : un filtre en plus.
+const ALL_ITEMS_VIEW = "__all";
+const ALL_SORTS = [...CATEGORY_SORTS, { id: "mois", label: "Portées ce mois-ci" }];
 // L'ordre des onglets détermine le sens du glissement : passer de "dressing"
 // à "tenues" glisse vers la gauche, l'inverse glisse vers la droite.
 const TAB_ORDER = ["accueil", "dressing", "tenues", "agenda"];
@@ -685,10 +688,11 @@ export default function App() {
   const categoryItems = categoryView
     ? sortItems(
         items
-          .filter((i) => i.category === categoryView)
+          .filter((i) => categoryView === ALL_ITEMS_VIEW || i.category === categoryView)
           .filter((i) => categorySort !== "favoris" || i.favorite)
-          .filter((i) => categorySort !== "jamais" || (i.wornDates || []).length === 0),
-        categorySort === "favoris" || categorySort === "jamais" ? "couleur" : categorySort
+          .filter((i) => categorySort !== "jamais" || (i.wornDates || []).length === 0)
+          .filter((i) => categorySort !== "mois" || (i.wornDates || []).some((d) => new Date(d).toISOString().slice(0, 7) === new Date().toISOString().slice(0, 7))),
+        categorySort === "favoris" || categorySort === "jamais" || categorySort === "mois" ? "couleur" : categorySort
       )
     : [];
 
@@ -2273,9 +2277,9 @@ export default function App() {
                     type="button"
                     onClick={() => openWizard(todayKey(), rediscoverItem.id)}
                     className="mt-2.5 rounded-full flex items-center gap-1.5 text-sm"
-                    style={{ height: 34, padding: "0 14px", border: `1px solid ${COLORS.rose}`, color: COLORS.rose, fontWeight: 600 }}
+                    style={{ height: 34, padding: "0 14px", border: `1px solid ${COLORS.rose}`, color: COLORS.rose, fontWeight: 600, whiteSpace: "nowrap" }}
                   >
-                    <Sparkles size={14} /> Construire une tenue avec
+                    <Sparkles size={14} /> Créer une tenue
                   </button>
                   <div className="flex gap-4 mt-2">
                     {rediscoverPool.length > 1 && (
@@ -2335,19 +2339,25 @@ export default function App() {
               const wornThisMonth = items.filter((i) => (i.wornDates || []).some((d) => new Date(d).toISOString().slice(0, 7) === monthKey)).length;
               const neverWorn = items.filter((i) => (i.wornDates || []).length === 0).length;
               const stats = [
-                { n: wornThisMonth, label: `pièce${wornThisMonth > 1 ? "s" : ""} portée${wornThisMonth > 1 ? "s" : ""} ce mois-ci` },
-                { n: neverWorn, label: `jamais portée${neverWorn > 1 ? "s" : ""}` },
-                { n: favoriteItemsCount, label: `favori${favoriteItemsCount > 1 ? "s" : ""}`, accent: true },
+                { sort: "mois", n: wornThisMonth, label: `pièce${wornThisMonth > 1 ? "s" : ""} portée${wornThisMonth > 1 ? "s" : ""} ce mois-ci` },
+                { sort: "jamais", n: neverWorn, label: `jamais portée${neverWorn > 1 ? "s" : ""}` },
+                { sort: "favoris", n: favoriteItemsCount, label: `favori${favoriteItemsCount > 1 ? "s" : ""}`, accent: true },
               ];
               return (
-                <button type="button" onClick={() => changeView("dressing")} className="grid grid-cols-3 gap-2 mb-7 w-full text-left">
+                <div className="grid grid-cols-3 gap-2 mb-7">
                   {stats.map((st) => (
-                    <div key={st.label} style={{ padding: "14px 12px", borderRadius: 16, background: COLORS.haze }}>
+                    <button
+                      key={st.sort}
+                      type="button"
+                      onClick={() => { changeView("dressing"); setCategoryView(ALL_ITEMS_VIEW); setCategorySort(st.sort); }}
+                      className="text-left"
+                      style={{ padding: "14px 12px", borderRadius: 16, background: COLORS.haze }}
+                    >
                       <p className="display" style={{ fontWeight: 700, fontSize: 26, lineHeight: 1, color: st.accent ? COLORS.rose : COLORS.ink }}>{st.n}</p>
                       <p className="text-xs" style={{ marginTop: 6, lineHeight: 1.3, color: "#777777" }}>{st.label}</p>
-                    </div>
+                    </button>
                   ))}
-                </button>
+                </div>
               );
             })()}
 
@@ -2552,7 +2562,7 @@ export default function App() {
                 >
                   <ArrowLeft size={20} />
                 </button>
-                <h1 className="display text-3xl" style={{ fontWeight: 700 }}>{CATEGORY_PLURALS[categoryView] || categoryView}</h1>
+                <h1 className="display text-3xl" style={{ fontWeight: 700 }}>{categoryView === ALL_ITEMS_VIEW ? "Toutes les pièces" : CATEGORY_PLURALS[categoryView] || categoryView}</h1>
                 <p className="text-sm mt-1" style={{ color: COLORS.muted }}>
                   {categoryItems.length} pièce{categoryItems.length > 1 ? "s" : ""}
                 </p>
@@ -2698,7 +2708,7 @@ export default function App() {
               /* ── Vue "Tout voir" d'une catégorie : grille à 3 colonnes ── */
               <div>
                 <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2 overflow-x-auto mb-4">
-                  {CATEGORY_SORTS.map((s) => {
+                  {(categoryView === ALL_ITEMS_VIEW ? ALL_SORTS : CATEGORY_SORTS).map((s) => {
                     const active = categorySort === s.id;
                     return (
                       <button
@@ -2721,7 +2731,7 @@ export default function App() {
                 </div>
                 {categoryItems.length === 0 ? (
                   <p className="text-sm py-10 text-center" style={{ color: COLORS.muted }}>
-                    {categorySort === "favoris" ? "Aucun favori" : categorySort === "jamais" ? "Tout a déjà été porté ✓" : "Vide"}
+                    {categorySort === "favoris" ? "Aucun favori" : categorySort === "jamais" ? "Tout a déjà été porté ✓" : categorySort === "mois" ? "Rien de porté ce mois-ci" : "Vide"}
                   </p>
                 ) : (
                   <div className="grid grid-cols-3 gap-2">
@@ -3429,7 +3439,7 @@ export default function App() {
                       <Camera size={20} color={COLORS.rose} />
                     </span>
                     <p className="display" style={{ fontWeight: 700, fontSize: 17 }}>Ton carnet est vide</p>
-                    <p className="text-sm" style={{ color: COLORS.muted }}>Prends-toi en photo avec ta tenue du jour.</p>
+                    <p className="text-sm" style={{ color: COLORS.muted }}>Prends-toi en photo avec ta tenue du jour : un selfie miroir suffit.</p>
                   </div>
                 );
               }
