@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Plus, X, Pencil, Shirt, Layers, Sparkles, Camera, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Cloud, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
+import { Plus, X, Pencil, ChevronDown, Shirt, Layers, Sparkles, Camera, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Cloud, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
 import Cropper from "react-easy-crop";
 import { supabase } from "./supabaseClient";
 
@@ -324,6 +324,10 @@ export default function App() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   // Page Tenues : rangée ouverte en "Tout voir" (null = vue en rangées).
   const [outfitGroupView, setOutfitGroupView] = useState(null);
+  // Page Tenues : tags cochés en haut (on ne garde que les tenues concernées)
+  // et ouverture du cadre "Parfaites pour aujourd'hui".
+  const [outfitTagFilter, setOutfitTagFilter] = useState({ fav: false, weather: [], occasions: [] });
+  const [todayPicksOpen, setTodayPicksOpen] = useState(false);
   const [outfitWeatherFilter, setOutfitWeatherFilter] = useState("Tous");
   const [outfitOccasionFilter, setOutfitOccasionFilter] = useState("Tous");
   // Filtre catégorie pour le sélecteur de vêtements, séparé pour chaque écran
@@ -738,7 +742,7 @@ export default function App() {
           }}
           onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
           className="display flex-1 min-w-0 text-xl outline-none"
-          style={{ fontWeight: 600, background: "transparent", borderBottom: "1px dashed transparent" }}
+          style={{ fontWeight: 700, background: "transparent", borderBottom: "1px dashed transparent" }}
           onFocus={(e) => { e.target.style.borderBottomColor = COLORS.line; }}
         />
         <Pencil size={15} style={{ opacity: 0.35, flexShrink: 0 }} />
@@ -828,7 +832,7 @@ export default function App() {
                     type="button"
                     key={v}
                     onClick={() => toggleOutfitTag(g.field, v)}
-                    className="px-2.5 py-1 rounded-full text-xs"
+                    className="px-4 h-9 rounded-full text-sm"
                     style={{
                       background: active ? COLORS.ink : "transparent",
                       color: active ? "white" : COLORS.ink,
@@ -1262,6 +1266,23 @@ export default function App() {
     { key: "toutes", title: "Toutes mes tenues", list: outfitsByRecent },
   ].filter((g) => g.list.length > 0);
   const todayOutfits = todayOutfitTag ? outfitsByRecent.filter((o) => (o.weather || []).includes(todayOutfitTag)) : [];
+
+  // Toutes les tenues, filtrées par les tags cochés : dans un même groupe (météo, occasion),
+  // il suffit d'un tag en commun ; entre groupes, il faut respecter chacun.
+  const hasOutfitFilter = outfitTagFilter.fav || outfitTagFilter.weather.length > 0 || outfitTagFilter.occasions.length > 0;
+  const filteredOutfits = outfitsByRecent.filter((o) => {
+    if (outfitTagFilter.fav && !o.favorite) return false;
+    if (outfitTagFilter.weather.length > 0 && !outfitTagFilter.weather.some((w) => (o.weather || []).includes(w))) return false;
+    if (outfitTagFilter.occasions.length > 0 && !outfitTagFilter.occasions.some((x) => (o.occasions || []).includes(x))) return false;
+    return true;
+  });
+  function toggleOutfitFilter(group, value) {
+    setOutfitTagFilter((prev) =>
+      group === "fav"
+        ? { ...prev, fav: !prev.fav }
+        : { ...prev, [group]: prev[group].includes(value) ? prev[group].filter((v) => v !== value) : [...prev[group], value] }
+    );
+  }
 
   // Vignette d'une tenue : ses pièces en mosaïque 2×2, son nom dessous, un cœur si favorite.
   function renderOutfitTile(outfit, size) {
@@ -1878,14 +1899,14 @@ export default function App() {
               return (
                 <div
                   onClick={() => setOpenEntryId(null)}
-                  className="fixed inset-0 flex items-center justify-center p-5"
+                  className="fixed inset-0 flex items-end justify-center"
                   style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
                 >
                   {/* stopPropagation : un clic à l'intérieur de la popup ne doit pas la fermer */}
-                  <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-lg p-5" style={{ background: "#FFFFFF", maxHeight: "85vh", overflowY: "auto" }}>
+                  <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                     <div className="flex items-center justify-between mb-4">
-                      <p className="display text-lg" style={{ fontWeight: 600 }}>{entry.label}</p>
-                      <button onClick={() => setOpenEntryId(null)} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
+                      <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>{entry.label}</p>
+                      <button onClick={() => setOpenEntryId(null)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
                         <X size={14} />
                       </button>
                     </div>
@@ -1980,7 +2001,7 @@ export default function App() {
             {!categoryView ? (
               <div className="flex items-end justify-between mb-6">
                 <div>
-                  <h1 className="display text-3xl" style={{ fontWeight: 600 }}>Garde-robe</h1>
+                  <h1 className="display text-3xl" style={{ fontWeight: 700 }}>Garde-robe</h1>
                   <p className="text-sm mt-1" style={{ color: COLORS.muted }}>
                     {items.length} pièce{items.length > 1 ? "s" : ""}
                   </p>
@@ -2005,7 +2026,7 @@ export default function App() {
                 >
                   <ArrowLeft size={20} />
                 </button>
-                <h1 className="display text-3xl" style={{ fontWeight: 600 }}>{CATEGORY_PLURALS[categoryView] || categoryView}</h1>
+                <h1 className="display text-3xl" style={{ fontWeight: 700 }}>{CATEGORY_PLURALS[categoryView] || categoryView}</h1>
                 <p className="text-sm mt-1" style={{ color: COLORS.muted }}>
                   {categoryItems.length} pièce{categoryItems.length > 1 ? "s" : ""}
                 </p>
@@ -2026,22 +2047,22 @@ export default function App() {
             {showAddForm && (
               <div
                 onClick={() => setShowAddForm(false)}
-                className="fixed inset-0 flex items-center justify-center p-5"
+                className="fixed inset-0 flex items-end justify-center"
                 style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
               >
-                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-lg p-5" style={{ background: "#FFFFFF", maxHeight: "85vh", overflowY: "auto" }}>
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                   <div className="flex items-center justify-between mb-4">
-                    <p className="display text-lg" style={{ fontWeight: 600 }}>Ajouter un vêtement</p>
-                    <button onClick={() => setShowAddForm(false)} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
+                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Ajouter un vêtement</p>
+                    <button onClick={() => setShowAddForm(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
                       <X size={14} />
                     </button>
                   </div>
                   <form onSubmit={(e) => { addItem(e); setShowAddForm(false); }} className="flex flex-wrap gap-3 items-end">
                     <div className="flex-1 min-w-[140px]">
-                      <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Nom du vêtement" className="w-full px-3 py-2 rounded text-sm" style={{ border: `1px solid ${COLORS.line}`, outline: "none" }} />
+                      <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Nom du vêtement" className="w-full px-4 py-2.5 rounded-xl text-sm" style={{ border: `1px solid ${COLORS.line}`, outline: "none" }} />
                     </div>
                     <div>
-                      <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className="px-3 py-2 rounded text-sm" style={{ border: `1px solid ${COLORS.line}` }}>
+                      <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className="px-4 py-2.5 rounded-xl text-sm" style={{ border: `1px solid ${COLORS.line}` }}>
                         {CATEGORIES.map((c) => <option key={c} value={c}>{catLabel(c)}</option>)}
                       </select>
                     </div>
@@ -2057,10 +2078,10 @@ export default function App() {
                     <div className="w-full">
                       <div className="flex gap-1.5 flex-wrap">
                         {WEATHER_TAGS.map((w) => (
-                          <button type="button" key={w} onClick={() => toggleFormWeather(w)} className="px-2.5 py-1 rounded-full text-xs" style={{
-                            background: form.weather.includes(w) ? COLORS.rose : "transparent",
+                          <button type="button" key={w} onClick={() => toggleFormWeather(w)} className="px-4 h-9 rounded-full text-sm" style={{
+                            background: form.weather.includes(w) ? COLORS.ink : "transparent",
                             color: form.weather.includes(w) ? "white" : COLORS.ink,
-                            border: `1px solid ${form.weather.includes(w) ? COLORS.rose : COLORS.line}`,
+                            border: `1px solid ${form.weather.includes(w) ? COLORS.ink : COLORS.line}`,
                           }}>
                             {w}
                           </button>
@@ -2070,7 +2091,7 @@ export default function App() {
                     <div className="w-full">
                       <div className="flex gap-1.5 flex-wrap">
                         {OCCASIONS.map((o) => (
-                          <button type="button" key={o} onClick={() => toggleFormOccasion(o)} className="px-2.5 py-1 rounded-full text-xs" style={{
+                          <button type="button" key={o} onClick={() => toggleFormOccasion(o)} className="px-4 h-9 rounded-full text-sm" style={{
                             background: form.occasions.includes(o) ? COLORS.ink : "transparent",
                             color: form.occasions.includes(o) ? "white" : COLORS.ink,
                             border: `1px solid ${form.occasions.includes(o) ? COLORS.ink : COLORS.line}`,
@@ -2188,17 +2209,17 @@ export default function App() {
         {/* ══════════════════ FICHE ARTICLE (détail d'un vêtement) ══════════════════ */}
         {view === "dressing" && detailItem && (
           <div key={detailItemId} className="slide-right">
-            <button onClick={() => setDetailItemId(null)} className="flex items-center gap-1.5 text-sm mb-4" style={{ opacity: 0.6 }}>
-              <ArrowLeft size={18} />
+            <button type="button" onClick={() => setDetailItemId(null)} aria-label="Retour" className="w-11 h-11 -ml-3 mb-2 rounded-full flex items-center justify-center">
+              <ArrowLeft size={20} />
             </button>
 
-            <div className="rounded-lg overflow-hidden mb-4 relative" style={{ background: COLORS.card, border: `1px solid ${COLORS.line}` }}>
+            <div className="mb-4 relative">
               {detailItem.photo ? (
-                <img src={detailItem.photo} alt={detailItem.name} style={{ width: "100%", height: 200, objectFit: "cover" }} />
+                <img src={detailItem.photo} alt={detailItem.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 20, display: "block", background: COLORS.haze }} />
               ) : (
-                <div style={{ background: detailItem.hex, height: 200 }} />
+                <div style={{ background: detailItem.hex, aspectRatio: "1 / 1", borderRadius: 20 }} />
               )}
-              <div className="absolute top-2 right-2 flex gap-1.5">
+              <div className="absolute top-3 right-3 flex gap-1.5">
                 {detailItem.photo && (
                   <button
                     type="button"
@@ -2249,7 +2270,7 @@ export default function App() {
                     <button
                       key={c}
                       onClick={() => setItems((prev) => prev.map((i) => i.id === detailItem.id ? { ...i, category: c } : i))}
-                      className="px-2.5 py-1 rounded-full text-xs"
+                      className="px-4 h-9 rounded-full text-sm"
                       style={{
                         background: active ? COLORS.ink : "transparent",
                         color: active ? "white" : COLORS.ink,
@@ -2295,10 +2316,10 @@ export default function App() {
                   const active = (detailItem.weather || []).includes(w);
                   return (
                     <button key={w} onClick={() => setItems((prev) => prev.map((i) => i.id === detailItem.id ? { ...i, weather: active ? (i.weather || []).filter((x) => x !== w) : [...(i.weather || []), w] } : i))}
-                      className="px-2.5 py-1 rounded-full text-xs" style={{
-                        background: active ? COLORS.rose : "transparent",
+                      className="px-4 h-9 rounded-full text-sm" style={{
+                        background: active ? COLORS.ink : "transparent",
                         color: active ? "white" : COLORS.ink,
-                        border: `1px solid ${active ? COLORS.rose : COLORS.line}`,
+                        border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
                       }}>
                       {w}
                     </button>
@@ -2314,7 +2335,7 @@ export default function App() {
                   const active = (detailItem.occasions || []).includes(o);
                   return (
                     <button key={o} onClick={() => setItems((prev) => prev.map((i) => i.id === detailItem.id ? { ...i, occasions: active ? (i.occasions || []).filter((x) => x !== o) : [...(i.occasions || []), o] } : i))}
-                      className="px-2.5 py-1 rounded-full text-xs" style={{
+                      className="px-4 h-9 rounded-full text-sm" style={{
                         background: active ? COLORS.ink : "transparent",
                         color: active ? "white" : COLORS.ink,
                         border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
@@ -2365,13 +2386,13 @@ export default function App() {
             {showPairsModal && (
               <div
                 onClick={() => setShowPairsModal(false)}
-                className="fixed inset-0 flex items-center justify-center p-5"
+                className="fixed inset-0 flex items-end justify-center"
                 style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
               >
-                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-lg p-5" style={{ background: "#FFFFFF", maxHeight: "85vh", overflowY: "auto" }}>
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                   <div className="flex items-center justify-between mb-4">
-                    <p className="display text-lg" style={{ fontWeight: 600 }}>Va bien avec</p>
-                    <button onClick={() => setShowPairsModal(false)} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
+                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Va bien avec</p>
+                    <button onClick={() => setShowPairsModal(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
                       <X size={14} />
                     </button>
                   </div>
@@ -2392,7 +2413,7 @@ export default function App() {
                 onChange={(e) => setItems((prev) => prev.map((i) => (i.id === detailItem.id ? { ...i, notes: e.target.value } : i)))}
                 placeholder="Notes…"
                 rows={3}
-                className="w-full px-3 py-2 rounded text-sm"
+                className="w-full px-4 py-2.5 rounded-xl text-sm"
                 style={{ border: `1px solid ${COLORS.line}`, outline: "none", resize: "vertical" }}
               />
             </div>
@@ -2414,7 +2435,7 @@ export default function App() {
               )}
             </div>
 
-            <button onClick={() => askConfirm("Supprimer ce vêtement ?", () => removeItem(detailItem.id))} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs" style={{ border: "1px solid #C4808C", color: "#C4808C" }}>
+            <button onClick={() => askConfirm("Supprimer ce vêtement ?", () => removeItem(detailItem.id))} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs" style={{ border: `1px solid ${COLORS.rose}`, color: COLORS.rose }}>
               <X size={13} /> Supprimer
             </button>
           </div>
@@ -2423,11 +2444,13 @@ export default function App() {
         {/* ══════════════════ VUE TENUES ══════════════════ */}
         {view === "tenues" && (
           <div key={view} className={slideDir === "right" ? "slide-right" : "slide-left"}>
-            {!outfitGroupView && !detailOutfitId && (
+            {!detailOutfitId && (
             <div className="flex items-end justify-between mb-6">
               <div>
                 <h1 className="display text-3xl" style={{ fontWeight: 700 }}>Tenues</h1>
-                <p className="text-sm mt-1" style={{ color: COLORS.muted }}>{outfits.length} tenue{outfits.length > 1 ? "s" : ""}</p>
+                <p className="text-sm mt-1" style={{ color: COLORS.muted }}>
+                  {hasOutfitFilter ? `${filteredOutfits.length} sur ${outfits.length}` : outfits.length} tenue{outfits.length > 1 ? "s" : ""}
+                </p>
               </div>
               <button
                 type="button"
@@ -2571,7 +2594,7 @@ export default function App() {
                           })}
                         </div>
 
-                        <input value={outfitName} onChange={(e) => setOutfitName(e.target.value)} placeholder="Nom de la tenue" className="w-full px-3 py-2 rounded text-sm mb-3" style={{ border: `1px solid ${COLORS.line}`, outline: "none" }} />
+                        <input value={outfitName} onChange={(e) => setOutfitName(e.target.value)} placeholder="Nom de la tenue" className="w-full px-4 py-2.5 rounded-xl text-sm mb-3" style={{ border: `1px solid ${COLORS.line}`, outline: "none" }} />
 
                         {renderOutfitTagPicker()}
 
@@ -2586,67 +2609,86 @@ export default function App() {
               </div>
             )}
 
-            {!detailOutfitId && !outfitGroupView && (
+            {!detailOutfitId && (
             <>
             {outfits.length === 0 ? (
               <p className="text-sm py-10 text-center" style={{ color: COLORS.muted }}>Aucune tenue</p>
             ) : (
-              <div className="flex flex-col gap-7">
-                {/* ── Parfaites pour aujourd'hui (selon la météo du jour) ── */}
+              <div className="flex flex-col gap-5">
+                {/* ── "Parfaites pour aujourd'hui" : cadre qui s'ouvre quand on le touche ── */}
                 {todayOutfitTag && weather && (
-                  <div className="p-4 rounded-2xl" style={{ background: COLORS.haze }}>
-                    <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Parfaites pour aujourd'hui</p>
-                    <p className="text-xs mt-0.5 mb-3" style={{ color: COLORS.muted }}>
-                      {todayOutfitTag} · {weather.min}° / {weather.max}°
-                    </p>
-                    {todayOutfits.length === 0 ? (
-                      <p className="text-sm" style={{ color: COLORS.muted }}>Aucune tenue taguée « {todayOutfitTag} » pour l'instant</p>
-                    ) : (
-                      <div data-no-swipe className="no-scrollbar -mx-4 px-4 py-0.5 flex gap-2.5 overflow-x-auto">
-                        {todayOutfits.map((o) => renderOutfitTile(o, 112))}
+                  <div className="rounded-2xl" style={{ background: COLORS.haze }}>
+                    <button
+                      type="button"
+                      onClick={() => setTodayPicksOpen((v) => !v)}
+                      aria-expanded={todayPicksOpen}
+                      className="w-full flex items-center justify-between gap-3 p-4 text-left"
+                    >
+                      <span className="min-w-0">
+                        <span className="display block" style={{ fontWeight: 700, fontSize: 16 }}>Parfaites pour aujourd'hui</span>
+                        <span className="text-xs" style={{ color: COLORS.muted }}>
+                          {todayOutfitTag} · {weather.min}° / {weather.max}° · {todayOutfits.length} tenue{todayOutfits.length > 1 ? "s" : ""}
+                        </span>
+                      </span>
+                      <ChevronDown size={20} style={{ flexShrink: 0, transition: "transform 0.2s", transform: todayPicksOpen ? "rotate(180deg)" : "none" }} />
+                    </button>
+                    {todayPicksOpen && (
+                      <div className="px-4 pb-4">
+                        {todayOutfits.length === 0 ? (
+                          <p className="text-sm" style={{ color: COLORS.muted }}>Aucune tenue taguée « {todayOutfitTag} » pour l'instant</p>
+                        ) : (
+                          <div data-no-swipe className="no-scrollbar -mx-4 px-4 py-0.5 flex gap-2.5 overflow-x-auto">
+                            {todayOutfits.map((o) => renderOutfitTile(o, 104))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
                 )}
 
-                {/* ── Une rangée par météo, qui défile sur le côté ── */}
-                {outfitGroups.map((g) => (
-                  <section key={g.key}>
-                    <div className="flex items-baseline justify-between mb-2">
-                      <h2 className="text-base" style={{ fontWeight: 600 }}>
-                        {g.title} <span style={{ fontWeight: 400, color: COLORS.muted }}>· {g.list.length}</span>
-                      </h2>
-                      <button type="button" onClick={() => setOutfitGroupView(g.key)} className="text-sm py-2" style={{ color: COLORS.rose, fontWeight: 500 }}>
-                        Tout voir
-                      </button>
-                    </div>
-                    <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2.5 overflow-x-auto">
-                      {g.list.map((o) => renderOutfitTile(o, 112))}
-                    </div>
-                  </section>
-                ))}
+                {/* ── Tags pour ne garder que les tenues concernées ── */}
+                <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2 overflow-x-auto">
+                  {[
+                    { group: "fav", value: "fav", label: "Favorites", active: outfitTagFilter.fav },
+                    ...WEATHER_TAGS.map((w) => ({ group: "weather", value: w, label: w, active: outfitTagFilter.weather.includes(w) })),
+                    ...OCCASIONS.map((o) => ({ group: "occasions", value: o, label: o, active: outfitTagFilter.occasions.includes(o) })),
+                  ].map((t) => (
+                    <button
+                      key={t.group + t.value}
+                      type="button"
+                      onClick={() => toggleOutfitFilter(t.group, t.value)}
+                      aria-pressed={t.active}
+                      className="flex-shrink-0 flex items-center gap-1.5 px-4 rounded-full text-sm"
+                      style={{
+                        height: 36,
+                        background: t.active ? COLORS.ink : "transparent",
+                        color: t.active ? "white" : COLORS.ink,
+                        border: `1px solid ${t.active ? COLORS.ink : COLORS.line}`,
+                      }}
+                    >
+                      {t.group === "fav" && <Heart size={13} fill={t.active ? "white" : "none"} />}
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* ── Toutes les tenues, en grille ── */}
+                {filteredOutfits.length === 0 ? (
+                  <div className="py-8 text-center">
+                    <p className="text-sm mb-3" style={{ color: COLORS.muted }}>Aucune tenue avec ces tags</p>
+                    <button type="button" onClick={() => setOutfitTagFilter({ fav: false, weather: [], occasions: [] })} className="text-sm" style={{ color: COLORS.rose, fontWeight: 500 }}>
+                      Tout afficher
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-4">
+                    {filteredOutfits.map((o) => renderOutfitTile(o))}
+                  </div>
+                )}
               </div>
             )}
             </>
             )}
-
-            {/* ── "Tout voir" d'une rangée : grille de 2 colonnes ── */}
-            {!detailOutfitId && outfitGroupView && (() => {
-              const g = outfitGroups.find((x) => x.key === outfitGroupView);
-              if (!g) return null;
-              return (
-                <div>
-                  <button type="button" onClick={() => setOutfitGroupView(null)} aria-label="Retour aux tenues" className="w-11 h-11 -ml-3 mb-1 rounded-full flex items-center justify-center">
-                    <ArrowLeft size={20} />
-                  </button>
-                  <p className="display mb-1" style={{ fontWeight: 700, fontSize: 24 }}>{g.title}</p>
-                  <p className="text-sm mb-5" style={{ color: COLORS.muted }}>{g.list.length} tenue{g.list.length > 1 ? "s" : ""}</p>
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-4">
-                    {g.list.map((o) => renderOutfitTile(o))}
-                  </div>
-                </div>
-              );
-            })()}
 
             {/* ══════════════════ FICHE TENUE (détail d'une tenue enregistrée) ══════════════════ */}
             {detailOutfitId && (() => {
@@ -2655,8 +2697,8 @@ export default function App() {
               const validated = isWornToday(outfit);
               return (
                 <div>
-                  <button onClick={() => setDetailOutfitId(null)} className="flex items-center gap-1.5 text-sm mb-4" style={{ opacity: 0.6 }}>
-                    <ArrowLeft size={15} /> Retour aux tenues
+                  <button type="button" onClick={() => setDetailOutfitId(null)} aria-label="Retour aux tenues" className="w-11 h-11 -ml-3 mb-2 rounded-full flex items-center justify-center">
+                    <ArrowLeft size={20} />
                   </button>
 
                   <div className="flex items-center justify-between mb-3">
@@ -2687,10 +2729,10 @@ export default function App() {
                         const active = (outfit.weather || []).includes(w);
                         return (
                           <button key={w} onClick={() => setOutfits((prev) => prev.map((o) => o.id === outfit.id ? { ...o, weather: active ? (o.weather || []).filter((x) => x !== w) : [...(o.weather || []), w] } : o))}
-                            className="px-2.5 py-1 rounded-full text-xs" style={{
-                              background: active ? COLORS.rose : "transparent",
+                            className="px-4 h-9 rounded-full text-sm" style={{
+                              background: active ? COLORS.ink : "transparent",
                               color: active ? "white" : COLORS.ink,
-                              border: `1px solid ${active ? COLORS.rose : COLORS.line}`,
+                              border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
                             }}>
                             {w}
                           </button>
@@ -2706,7 +2748,7 @@ export default function App() {
                         const active = (outfit.occasions || []).includes(o2);
                         return (
                           <button key={o2} onClick={() => setOutfits((prev) => prev.map((o) => o.id === outfit.id ? { ...o, occasions: active ? (o.occasions || []).filter((x) => x !== o2) : [...(o.occasions || []), o2] } : o))}
-                            className="px-2.5 py-1 rounded-full text-xs" style={{
+                            className="px-4 h-9 rounded-full text-sm" style={{
                               background: active ? COLORS.ink : "transparent",
                               color: active ? "white" : COLORS.ink,
                               border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
@@ -2747,7 +2789,7 @@ export default function App() {
                     >
                       {validated ? "Portée aujourd'hui ✓" : "Portée aujourd'hui"}
                     </button>
-                    <button onClick={() => askConfirm("Supprimer cette tenue ?", () => { removeOutfit(outfit.id); setDetailOutfitId(null); })} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs" style={{ border: "1px solid #C4808C", color: "#C4808C" }}>
+                    <button onClick={() => askConfirm("Supprimer cette tenue ?", () => { removeOutfit(outfit.id); setDetailOutfitId(null); })} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs" style={{ border: `1px solid ${COLORS.rose}`, color: COLORS.rose }}>
                       <X size={13} /> Supprimer cette tenue
                     </button>
                   </div>
@@ -2897,10 +2939,10 @@ export default function App() {
               return (
                 <div
                   onClick={() => setDayViewDate(null)}
-                  className="fixed inset-0 flex items-center justify-center p-5"
+                  className="fixed inset-0 flex items-end justify-center"
                   style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
                 >
-                  <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-lg p-5" style={{ background: "#FFFFFF", maxHeight: "85vh", overflowY: "auto" }}>
+                  <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                     <div className="flex items-center justify-between mb-4">
                       <button onClick={() => setDayViewDate(shiftDateKey(dayViewDate, -1))} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
                         <ArrowLeft size={15} />
@@ -2969,7 +3011,7 @@ export default function App() {
               >
                 <div onClick={(e) => e.stopPropagation()} className="w-full max-w-xs rounded-2xl p-5 text-center" style={{ background: "#FFFFFF" }}>
                   <div className="w-11 h-11 rounded-full mx-auto mb-3 flex items-center justify-center" style={{ background: "#FDE8E5" }}>
-                    <X size={18} color="#C4808C" />
+                    <X size={18} color={COLORS.rose} />
                   </div>
                   <p className="display mb-5" style={{ fontWeight: 700, fontSize: 17 }}>{confirmDialog.message}</p>
                   <div className="flex gap-2">
@@ -2985,7 +3027,7 @@ export default function App() {
                       type="button"
                       onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}
                       className="flex-1 px-4 py-2.5 rounded-full text-sm text-white"
-                      style={{ background: "#C4808C" }}
+                      style={{ background: COLORS.rose }}
                     >
                       Supprimer
                     </button>
@@ -3002,13 +3044,13 @@ export default function App() {
               return (
                 <div
                   onClick={() => setShowWizard(false)}
-                  className="fixed inset-0 flex items-center justify-center p-5"
+                  className="fixed inset-0 flex items-end justify-center"
                   style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
                 >
-                  <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-lg p-5" style={{ background: "#FFFFFF", maxHeight: "85vh", overflowY: "auto" }}>
+                  <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                     <div className="flex items-center justify-between mb-1">
-                      <p className="display text-lg" style={{ fontWeight: 600 }}>Suggère-moi une tenue</p>
-                      <button onClick={() => setShowWizard(false)} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
+                      <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Suggère-moi une tenue</p>
+                      <button onClick={() => setShowWizard(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
                         <X size={14} />
                       </button>
                     </div>
@@ -3086,7 +3128,7 @@ export default function App() {
                           )}
 
                           {current && (
-                            <button type="button" onClick={() => removeWizardItem(wizardSwap)} className="w-full px-4 py-2 rounded-full text-sm" style={{ border: "1px solid #C4808C", color: "#C4808C" }}>
+                            <button type="button" onClick={() => removeWizardItem(wizardSwap)} className="w-full px-4 py-2 rounded-full text-sm" style={{ border: `1px solid ${COLORS.rose}`, color: COLORS.rose }}>
                               Retirer cette pièce
                             </button>
                           )}
@@ -3153,7 +3195,7 @@ export default function App() {
                             value={outfitName}
                             onChange={(e) => setOutfitName(e.target.value)}
                             placeholder="Nom de la tenue"
-                            className="w-full px-3 py-2 rounded text-sm mb-3"
+                            className="w-full px-4 py-2.5 rounded-xl text-sm mb-3"
                             style={{ border: `1px solid ${COLORS.line}`, outline: "none" }}
                           />
                         )}
@@ -3274,10 +3316,10 @@ export default function App() {
                           {WEATHER_TAGS.map((w) => {
                             const active = currentWeather === w;
                             return (
-                              <button type="button" key={w} onClick={() => setCurrentWeather(active ? null : w)} className="px-3 py-1.5 rounded-full text-sm" style={{
-                                background: active ? COLORS.rose : "transparent",
+                              <button type="button" key={w} onClick={() => setCurrentWeather(active ? null : w)} className="px-4 h-9 rounded-full text-sm" style={{
+                                background: active ? COLORS.ink : "transparent",
                                 color: active ? "white" : COLORS.ink,
-                                border: `1px solid ${active ? COLORS.rose : COLORS.line}`,
+                                border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
                               }}>
                                 {w}
                               </button>
@@ -3294,7 +3336,7 @@ export default function App() {
                           {OCCASIONS.map((o) => {
                             const active = genOccasion === o;
                             return (
-                              <button type="button" key={o} onClick={() => setGenOccasion(active ? null : o)} className="px-3 py-1.5 rounded-full text-sm" style={{
+                              <button type="button" key={o} onClick={() => setGenOccasion(active ? null : o)} className="px-4 h-9 rounded-full text-sm" style={{
                                 background: active ? COLORS.ink : "transparent",
                                 color: active ? "white" : COLORS.ink,
                                 border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
@@ -3345,10 +3387,10 @@ export default function App() {
                           {[{ key: "souvent", label: "Vêtements souvent portés" }, { key: "oser", label: "Oser du neuf" }].map(({ key, label }) => {
                             const active = genPreference === key;
                             return (
-                              <button type="button" key={key} onClick={() => setGenPreference(active ? null : key)} className="px-3 py-1.5 rounded-full text-sm" style={{
-                                background: active ? COLORS.gold : "transparent",
+                              <button type="button" key={key} onClick={() => setGenPreference(active ? null : key)} className="px-4 h-9 rounded-full text-sm" style={{
+                                background: active ? COLORS.ink : "transparent",
                                 color: active ? "white" : COLORS.ink,
-                                border: `1px solid ${active ? COLORS.gold : COLORS.line}`,
+                                border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
                               }}>
                                 {label}
                               </button>
@@ -3383,13 +3425,13 @@ export default function App() {
             {/* ── Popup de recadrage de photo — globale, accessible depuis n'importe quel onglet ── */}
             {showCropModal && (
               <div
-                className="fixed inset-0 flex items-center justify-center p-5"
+                className="fixed inset-0 flex items-end justify-center"
                 style={{ background: "rgba(0,0,0,0.6)", zIndex: 60 }}
               >
-                <div className="w-full max-w-sm rounded-lg p-5" style={{ background: "#FFFFFF" }}>
+                <div className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                   <div className="flex items-center justify-between mb-4">
-                    <p className="display text-lg" style={{ fontWeight: 600 }}>Recadrer la photo</p>
-                    <button onClick={() => { setShowCropModal(false); setRawImageSrc(null); }} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
+                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Recadrer la photo</p>
+                    <button onClick={() => { setShowCropModal(false); setRawImageSrc(null); }} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
                       <X size={14} />
                     </button>
                   </div>
@@ -3438,22 +3480,22 @@ export default function App() {
             {showQuickPlanModal && (
               <div
                 onClick={() => setShowQuickPlanModal(false)}
-                className="fixed inset-0 flex items-center justify-center p-5"
+                className="fixed inset-0 flex items-end justify-center"
                 style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
               >
-                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-lg p-5" style={{ background: "#FFFFFF", maxHeight: "85vh", overflowY: "auto" }}>
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                   <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2">
                       {quickPlanMode !== "choice" && (
-                        <button onClick={() => setQuickPlanMode("choice")} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
+                        <button onClick={() => setQuickPlanMode("choice")} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
                           <ArrowLeft size={14} />
                         </button>
                       )}
-                      <p className="display text-lg" style={{ fontWeight: 600 }}>
+                      <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>
                         {planDate === todayKey() ? "Tenue pour aujourd'hui" : planDate === tomorrowKey() ? "Tenue pour demain" : "Planifier une tenue"}
                       </p>
                     </div>
-                    <button onClick={() => setShowQuickPlanModal(false)} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: "rgba(0,0,0,0.06)" }}>
+                    <button onClick={() => setShowQuickPlanModal(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
                       <X size={14} />
                     </button>
                   </div>
@@ -3465,7 +3507,7 @@ export default function App() {
                         type="date"
                         value={planDate}
                         onChange={(e) => setPlanDate(e.target.value)}
-                        className="px-3 py-2 rounded text-sm"
+                        className="px-4 py-2.5 rounded-xl text-sm"
                         style={{ border: `1px solid ${COLORS.line}` }}
                       />
                     </div>
@@ -3554,7 +3596,7 @@ export default function App() {
                         value={planLabel}
                         onChange={(e) => setPlanLabel(e.target.value)}
                         placeholder="Nom (optionnel)"
-                        className="w-full px-3 py-2 rounded text-sm mb-3"
+                        className="w-full px-4 py-2.5 rounded-xl text-sm mb-3"
                         style={{ border: `1px solid ${COLORS.line}`, outline: "none" }}
                       />
 
@@ -3618,7 +3660,7 @@ export default function App() {
                   padding: active ? "0 16px 0 13px" : "0 12px",
                   gap: 6,
                   borderRadius: 999,
-                  background: active ? COLORS.rose : "transparent",
+                  background: active ? COLORS.ink : "transparent",
                   transition: "background 0.2s, padding 0.2s",
                 }}
               >
