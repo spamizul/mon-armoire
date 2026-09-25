@@ -105,6 +105,27 @@ function compareByColor(a, b) {
   return A[0] !== B[0] ? A[0] - B[0] : A[1] - B[1];
 }
 
+// ── Photos détourées (fond transparent) ──
+// Vrai si l'image dessinée sur ce canvas a des zones transparentes (vêtement détouré).
+function canvasHasTransparency(canvas) {
+  const probe = document.createElement("canvas");
+  probe.width = 48;
+  probe.height = 48;
+  const ctx = probe.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(canvas, 0, 0, 48, 48);
+  const d = ctx.getImageData(0, 0, 48, 48).data;
+  for (let i = 3; i < d.length; i += 4) if (d[i] < 250) return true;
+  return false;
+}
+// Exporte un canvas : en PNG s'il a de la transparence (pour garder le détourage), sinon en JPEG (plus léger).
+function canvasToDataUrl(canvas, quality = 0.85) {
+  return canvasHasTransparency(canvas) ? canvas.toDataURL("image/png") : canvas.toDataURL("image/jpeg", quality);
+}
+// Vrai si la photo d'un vêtement est détourée (enregistrée en PNG).
+function isCutout(item) {
+  return !!item && !!item.photo && /\.png(\?|$)/i.test(item.photo);
+}
+
 // Détecte la couleur principale d'une photo, directement dans le navigateur.
 // On ne regarde que le centre de l'image (là où se trouve le vêtement) pour éviter
 // que le fond (parquet, lit, mur…) ne fausse le résultat. Les pixels sont rangés
@@ -124,10 +145,20 @@ async function detectColorPalette(src) {
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(img, img.width * 0.2, img.height * 0.2, img.width * 0.6, img.height * 0.6, 0, 0, size, size);
+  // Photo détourée : on analyse toute l'image (le fond transparent est ignoré).
+  // Photo normale : seulement le centre, pour éviter le fond.
+  ctx.drawImage(img, 0, 0, size, size);
+  const cutout = canvasHasTransparency(canvas);
+  if (!cutout) {
+    ctx.clearRect(0, 0, size, size);
+    ctx.drawImage(img, img.width * 0.2, img.height * 0.2, img.width * 0.6, img.height * 0.6, 0, 0, size, size);
+  }
   const data = ctx.getImageData(0, 0, size, size).data;
   const buckets = {};
+  let counted = 0;
   for (let p = 0; p < data.length; p += 4) {
+    if (data[p + 3] < 128) continue; // pixel transparent : c'est le fond enlevé
+    counted++;
     const r = data[p], g = data[p + 1], b = data[p + 2];
     const k = `${r >> 5}-${g >> 5}-${b >> 5}`;
     const bucket = buckets[k] || (buckets[k] = { count: 0, r: 0, g: 0, b: 0 });
@@ -137,7 +168,7 @@ async function detectColorPalette(src) {
     bucket.b += b;
   }
   // Les paniers du plus rempli au moins rempli, transformés en couleurs moyennes.
-  const total = size * size;
+  const total = counted || 1;
   const sorted = Object.values(buckets)
     .sort((a, b) => b.count - a.count)
     .map((bk) => ({ share: bk.count / total, rgb: [bk.r / bk.count, bk.g / bk.count, bk.b / bk.count] }));
@@ -190,7 +221,7 @@ async function makeThumbnail(src, size = 240) {
   canvas.width = size;
   canvas.height = size;
   canvas.getContext("2d").drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
-  return canvas.toDataURL("image/jpeg", 0.75);
+  return canvasToDataUrl(canvas, 0.75);
 }
 
 // Noms au pluriel pour les titres de rangées de la Garde-robe.
@@ -371,6 +402,8 @@ export default function App() {
   // Recadrage de photo : la popup s'ouvre juste après avoir choisi un fichier,
   // avant que la photo ne soit vraiment enregistrée dans le formulaire.
   const [showCropModal, setShowCropModal] = useState(false);
+  // Info sur la photo choisie (format reçu, fond transparent ou non), affichée dans le recadreur.
+  const [cropInfo, setCropInfo] = useState(null);
   const [rawImageSrc, setRawImageSrc] = useState(null); // la photo brute, pas encore recadrée
   const [cropPosition, setCropPosition] = useState({ x: 0, y: 0 });
   const [cropZoom, setCropZoom] = useState(1);
@@ -789,6 +822,14 @@ export default function App() {
     reader.onload = async () => {
       try {
         const resized = await resizeImageDataUrl(reader.result);
+        // Le fond est-il transparent ? (photo détourée par l'iPhone, par exemple)
+        try {
+          const im = await loadImage(resized);
+          const cv = document.createElement("canvas");
+          cv.width = im.width; cv.height = im.height;
+          cv.getContext("2d").drawImage(im, 0, 0);
+          setCropInfo({ type: file.type || "inconnu", transparent: canvasHasTransparency(cv) });
+        } catch { setCropInfo(null); }
         setRawImageSrc(resized);
         setCropPosition({ x: 0, y: 0 });
         setCropZoom(1);
@@ -827,7 +868,7 @@ export default function App() {
     canvas.width = Math.round(width * scale);
     canvas.height = Math.round(height * scale);
     canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.85);
+    return canvasToDataUrl(canvas, 0.85);
   }
 
   // Découpe réellement l'image selon la zone choisie dans le recadreur,
@@ -846,7 +887,7 @@ export default function App() {
       cropAreaPixels.x, cropAreaPixels.y, cropAreaPixels.width, cropAreaPixels.height,
       0, 0, outputSize, outputSize
     );
-    return canvas.toDataURL("image/jpeg", 0.85);
+    return canvasToDataUrl(canvas, 0.85);
   }
 
   // Valide le recadrage : découpe l'image et l'enregistre dans le formulaire.
@@ -855,8 +896,11 @@ export default function App() {
   // au lieu de l'image entière — ça évite de remplir le stockage limité du téléphone.
   async function uploadPhotoToStorage(dataUrl, label) {
     const blob = await (await fetch(dataUrl)).blob();
-    const path = `${label}-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
-    const { error } = await supabase.storage.from("photos").upload(path, blob, { contentType: "image/jpeg", cacheControl: "31536000" });
+    // PNG si la photo est détourée (fond transparent), sinon JPEG.
+    const type = blob.type === "image/png" ? "image/png" : blob.type === "image/webp" ? "image/webp" : "image/jpeg";
+    const ext = type === "image/png" ? "png" : type === "image/webp" ? "webp" : "jpg";
+    const path = `${label}-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+    const { error } = await supabase.storage.from("photos").upload(path, blob, { contentType: type, cacheControl: "31536000" });
     if (error) throw error;
     const { data } = supabase.storage.from("photos").getPublicUrl(path);
     return data.publicUrl;
@@ -1933,10 +1977,21 @@ export default function App() {
           return (
             <div
               key={item.id}
-              style={{ position: "absolute", left: `${l}%`, top: `${t}%`, width: `${w}%`, height: `${h}%`, transform: `rotate(${r}deg)`, borderRadius: 14, overflow: "hidden", boxShadow: "0 4px 14px rgba(0,0,0,0.12)", background: item.hex }}
+              style={isCutout(item)
+                // Vêtement détouré : posé directement sur le fond blanc, avec une ombre qui suit sa forme.
+                ? { position: "absolute", left: `${l}%`, top: `${t}%`, width: `${w}%`, height: `${h}%`, transform: `rotate(${r}deg)` }
+                : { position: "absolute", left: `${l}%`, top: `${t}%`, width: `${w}%`, height: `${h}%`, transform: `rotate(${r}deg)`, borderRadius: 14, overflow: "hidden", boxShadow: "0 4px 14px rgba(0,0,0,0.12)", background: item.hex }}
             >
               {item.photo && (
-                <img loading="lazy" decoding="async" src={item.photo} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                <img
+                  loading="lazy"
+                  decoding="async"
+                  src={item.photo}
+                  alt={item.name}
+                  style={isCutout(item)
+                    ? { width: "100%", height: "100%", objectFit: "contain", display: "block", filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.18))" }
+                    : { width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                />
               )}
             </div>
           );
@@ -4604,14 +4659,21 @@ export default function App() {
               >
                 <div className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                   <div className="flex items-center justify-between mb-4">
-                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Recadrer la photo</p>
+                    <div>
+                      <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Recadrer la photo</p>
+                      {cropInfo && (
+                        <p className="text-xs" style={{ color: cropInfo.transparent ? COLORS.rose : COLORS.muted, fontWeight: 600 }}>
+                          {cropInfo.transparent ? "Fond transparent détecté ✓" : `Pas de transparence (${cropInfo.type})`}
+                        </p>
+                      )}
+                    </div>
                     <button onClick={() => { setShowCropModal(false); setRawImageSrc(null); }} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
                       <X size={14} />
                     </button>
                   </div>
 
                   {/* Le recadreur a besoin d'un conteneur avec une hauteur fixe et position relative */}
-                  <div style={{ position: "relative", width: "100%", height: 280, background: "#222", borderRadius: 8, overflow: "hidden" }}>
+                  <div style={{ position: "relative", width: "100%", height: 280, background: cropInfo && cropInfo.transparent ? COLORS.haze : "#222", borderRadius: 8, overflow: "hidden" }}>
                     {rawImageSrc && (
                       <Cropper
                         image={rawImageSrc}
