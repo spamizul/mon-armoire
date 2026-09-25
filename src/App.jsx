@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Plus, X, Pencil, ChevronDown, Shirt, Layers, Sparkles, Camera, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Check, Crop, MoreVertical, Cloud, CloudOff, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
+import { Plus, X, Pencil, ChevronDown, Shirt, Layers, Sparkles, Camera, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Settings, Scissors, Check, Crop, MoreVertical, Cloud, CloudOff, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
 import Cropper from "react-easy-crop";
 import { supabase } from "./supabaseClient";
 
@@ -255,10 +255,13 @@ const CATEGORY_SORTS = [
   { id: "worn", label: "Plus portés" },
   { id: "favoris", label: "Favoris" },
   { id: "jamais", label: "Jamais portés" },
+  { id: "faitmain", label: "Fait main" },
 ];
 // Vue "toutes les pièces" (ouverte depuis les chiffres de la page Aujourd'hui) : un filtre en plus.
 const ALL_ITEMS_VIEW = "__all";
 const ALL_SORTS = [...CATEGORY_SORTS, { id: "mois", label: "Portées ce mois-ci" }];
+// Filtres par tag (météo, occasion), utilisés en haut de la Garde-robe et dans "Toutes les pièces".
+const TAG_SORTS = [...WEATHER_TAGS.map((w) => ({ id: `w:${w}`, label: w })), ...OCCASIONS.map((o) => ({ id: `o:${o}`, label: o }))];
 // L'ordre des onglets détermine le sens du glissement : passer de "dressing"
 // à "tenues" glisse vers la gauche, l'inverse glisse vers la droite.
 const TAB_ORDER = ["accueil", "dressing", "tenues", "agenda"];
@@ -478,6 +481,7 @@ export default function App() {
   const [agendaTab, setAgendaTab] = useState("calendrier");
   // Menu du bouton "+" central de la barre (éventail).
   const [showAddMenu, setShowAddMenu] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   // Id de l'entrée d'agenda dont la photo portée est en cours d'envoi ("new" pour une nouvelle).
   const [uploadingWornFor, setUploadingWornFor] = useState(null);
   // Mois ouverts dans l'Agenda (null = par défaut, seul le mois en cours est ouvert).
@@ -1006,7 +1010,7 @@ export default function App() {
     if (!form.name.trim()) return;
     const newItem = { id: Date.now(), ...form, pairsWith: [], wornDates: [] };
     setItems((prev) => [...prev, newItem]);
-    setForm({ name: "", category: form.category, hex: "#C4808C", extraHexes: [], photo: null, weather: [], occasions: [] });
+    setForm({ name: "", category: form.category, hex: "#C4808C", extraHexes: [], photo: null, weather: [], occasions: [], handmade: false });
     showToast({ text: `« ${newItem.name} » ajouté ✓`, action: "Voir", onAction: () => { changeView("dressing"); setDetailItemId(newItem.id); } });
   }
 
@@ -1042,12 +1046,39 @@ export default function App() {
     );
   }
 
+  // ── CE QUI COMPTE COMME "PORTÉ" ──
+  // Un vêtement (ou une tenue) est porté un jour s'il a été validé ce jour-là ("Je la porte"),
+  // OU s'il est noté dans l'agenda à cette date — aujourd'hui ou un jour passé (pas le futur).
+  const wornIndex = (() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const itemsMap = new Map();
+    const outfitsMap = new Map();
+    const add = (m, k, d) => { if (!m.has(k)) m.set(k, new Set()); m.get(k).add(d); };
+    Object.entries(agenda).forEach(([dateStr, v]) => {
+      if (dateStr > today) return;
+      normalizeDayEntries(v).forEach((e) => {
+        (e.itemIds || []).forEach((id) => add(itemsMap, id, dateStr));
+        if (e.outfitId) add(outfitsMap, e.outfitId, dateStr);
+      });
+    });
+    return { itemsMap, outfitsMap };
+  })();
+  // Jours où c'est porté ("2026-09-25"…), sans doublon, du plus ancien au plus récent.
+  function wornDays(obj, isOutfit) {
+    const set = new Set((obj.wornDates || []).map((d) => new Date(d).toISOString().slice(0, 10)));
+    const extra = (isOutfit ? wornIndex.outfitsMap : wornIndex.itemsMap).get(obj.id);
+    if (extra) extra.forEach((d) => set.add(d));
+    return [...set].sort();
+  }
+  function itemWornDays(item) { return wornDays(item, false); }
+  function outfitWornDays(outfit) { return wornDays(outfit, true); }
+
   // Trie une liste de vêtements : "couleur" (dégradé), "worn" (plus portés d'abord)
   // ou "recent" (derniers ajoutés d'abord).
   function sortItems(list, mode) {
     const copy = [...list];
     if (mode === "couleur") return copy.sort(compareByColor);
-    if (mode === "worn") return copy.sort((a, b) => (b.wornDates || []).length - (a.wornDates || []).length);
+    if (mode === "worn") return copy.sort((a, b) => itemWornDays(b).length - itemWornDays(a).length);
     return copy.sort((a, b) => b.id - a.id);
   }
 
@@ -1058,9 +1089,12 @@ export default function App() {
         items
           .filter((i) => categoryView === ALL_ITEMS_VIEW || i.category === categoryView)
           .filter((i) => categorySort !== "favoris" || i.favorite)
-          .filter((i) => categorySort !== "jamais" || (i.wornDates || []).length === 0)
-          .filter((i) => categorySort !== "mois" || (i.wornDates || []).some((d) => new Date(d).toISOString().slice(0, 7) === new Date().toISOString().slice(0, 7))),
-        categorySort === "favoris" || categorySort === "jamais" || categorySort === "mois" ? "couleur" : categorySort
+          .filter((i) => categorySort !== "jamais" || itemWornDays(i).length === 0)
+          .filter((i) => categorySort !== "faitmain" || i.handmade)
+          .filter((i) => !categorySort.startsWith("w:") || (i.weather || []).includes(categorySort.slice(2)))
+          .filter((i) => !categorySort.startsWith("o:") || (i.occasions || []).includes(categorySort.slice(2)))
+          .filter((i) => categorySort !== "mois" || itemWornDays(i).some((d) => d.slice(0, 7) === new Date().toISOString().slice(0, 7))),
+        ["favoris", "jamais", "mois", "faitmain"].includes(categorySort) || categorySort.includes(":") ? "couleur" : categorySort
       )
     : [];
 
@@ -1168,6 +1202,16 @@ export default function App() {
 
   // Une vignette de vêtement : juste la photo (ou sa couleur s'il n'y en a pas),
   // avec un petit cœur si c'est un favori.
+  // Petit interrupteur (oui / non), utilisé pour "Fait main".
+  function renderSwitch(on, onToggle, label) {
+    return (
+      <button type="button" role="switch" aria-checked={on} aria-label={label} onClick={onToggle}
+        style={{ width: 46, height: 28, borderRadius: 14, background: on ? COLORS.rose : "#E2E0DC", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
+        <span style={{ position: "absolute", top: 3, left: on ? 21 : 3, width: 22, height: 22, borderRadius: 11, background: "#FFFFFF", boxShadow: "0 1px 3px rgba(0,0,0,0.2)", transition: "left 0.2s" }} />
+      </button>
+    );
+  }
+
   function renderItemTile(item, sizeStyle) {
     return (
       <button
@@ -1189,6 +1233,11 @@ export default function App() {
             fill={COLORS.rose}
             style={{ position: "absolute", top: 8, right: 8, filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.3))" }}
           />
+        )}
+        {item.handmade && (
+          <span className="absolute flex items-center justify-center" title="Fait main" style={{ left: 6, bottom: 6, width: 22, height: 22, borderRadius: 11, background: "rgba(255,255,255,0.92)" }}>
+            <Scissors size={12} color={COLORS.rose} />
+          </span>
         )}
       </button>
     );
@@ -1514,10 +1563,10 @@ export default function App() {
     // Préférence : plutôt des habitués, ou plutôt des vêtements délaissés qu'on "ose" ressortir.
     const pref = prefOverride !== undefined ? prefOverride : genPreference;
     if (pref === "souvent") {
-      const sorted = [...pool].sort((a, b) => (b.wornDates || []).length - (a.wornDates || []).length);
+      const sorted = [...pool].sort((a, b) => itemWornDays(b).length - itemWornDays(a).length);
       pool = sorted.slice(0, Math.max(1, Math.ceil(sorted.length / 2))); // la moitié la plus portée
     } else if (pref === "oser") {
-      const sorted = [...pool].sort((a, b) => (a.wornDates || []).length - (b.wornDates || []).length);
+      const sorted = [...pool].sort((a, b) => itemWornDays(a).length - itemWornDays(b).length);
       pool = sorted.slice(0, Math.max(1, Math.ceil(sorted.length / 2))); // la moitié la moins portée
     }
 
@@ -1534,7 +1583,7 @@ export default function App() {
     });
     // Pas une tenue déjà portée ces 7 derniers jours : on évite de remettre toujours la même.
     const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    pool = pool.filter((o) => !(o.wornDates || []).some((d) => new Date(d).getTime() > weekAgo));
+    pool = pool.filter((o) => !outfitWornDays(o).some((d) => new Date(d).getTime() > weekAgo));
     if (baseItem) pool = pool.filter((o) => o.itemIds.includes(baseItem.id));
     // Régénérer : pas la même tenue que celle proposée juste avant.
     pool = pool.filter((o) => !(o.itemIds.length > 0 && o.itemIds.every((id) => avoid.has(id))));
@@ -1548,7 +1597,7 @@ export default function App() {
       });
     }
     if (pool.length === 0) return null;
-    const sorted = [...pool].sort((a, b) => (b.wornDates || []).length - (a.wornDates || []).length);
+    const sorted = [...pool].sort((a, b) => outfitWornDays(b).length - outfitWornDays(a).length);
     const top = sorted.slice(0, Math.max(1, Math.ceil(sorted.length / 2))); // la moitié la plus portée
     return top[Math.floor(Math.random() * top.length)];
   }
@@ -1914,8 +1963,8 @@ export default function App() {
 
   // Dernière date de port d'un vêtement (en millisecondes), 0 s'il n'a jamais été porté.
   function lastWornTime(item) {
-    const d = item.wornDates || [];
-    return d.length ? Math.max(...d.map((x) => new Date(x).getTime())) : 0;
+    const d = itemWornDays(item);
+    return d.length ? new Date(d[d.length - 1]).getTime() : 0;
   }
 
   // "Redécouvre" : les pièces oubliées (pas portées depuis 30 jours, ou jamais),
@@ -1960,7 +2009,7 @@ export default function App() {
       const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i, 12);
       const key = d.toISOString().slice(0, 10);
       const dayStr = d.toDateString();
-      const worn = items.filter((it) => (it.wornDates || []).some((x) => new Date(x).toDateString() === dayStr));
+      const worn = items.filter((it) => itemWornDays(it).includes(key) || (it.wornDates || []).some((x) => new Date(x).toDateString() === dayStr));
       const planned = agendaEntries.filter((e) => e.dateStr === key);
       return {
         key, letter,
@@ -2648,7 +2697,12 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                <h1 className="display" style={{ fontStyle: "italic", fontWeight: 700, fontSize: 32, lineHeight: 1.1, marginTop: 8 }}>{getGreeting(userName)}</h1>
+                <div className="flex items-center justify-between gap-3" style={{ marginTop: 8 }}>
+                  <h1 className="display" style={{ fontStyle: "italic", fontWeight: 700, fontSize: 32, lineHeight: 1.1 }}>{getGreeting(userName)}</h1>
+                  <button type="button" onClick={() => setShowSettings(true)} aria-label="Paramètres" className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze }}>
+                    <Settings size={18} />
+                  </button>
+                </div>
                 {/* Fin trait aux couleurs du jour (corail si rien n'est prévu) */}
                 <div
                   style={{
@@ -2761,7 +2815,7 @@ export default function App() {
                       return (
                         <div key={entry.entryId} style={{ flex: "0 0 100%", scrollSnapAlign: "start", minWidth: 0 }}>
                           <div className="relative cursor-pointer" onClick={() => setOpenEntryId(entry.entryId)}>
-                            {entry.wornPhoto ? (
+                            {entry.planItems.length === 0 && entry.wornPhoto ? (
                               <img src={entry.wornPhoto} alt={`Tenue portée — ${entry.label}`} style={{ width: "100%", height: 330, objectFit: "cover", display: "block", borderRadius: 18 }} />
                             ) : renderFlatLay(entry.planItems, 330)}
                             <button
@@ -2871,7 +2925,7 @@ export default function App() {
                         className="flex flex-col items-center gap-1.5"
                       >
                         <div style={{ borderRadius: 10, boxShadow: d.isToday ? `0 0 0 2px ${COLORS.rose}` : "none" }}>
-                          {d.planned.some((e) => e.wornPhoto)
+                          {d.shown.length === 0 && d.planned.some((e) => e.wornPhoto)
                             ? <img src={d.planned.find((e) => e.wornPhoto).wornPhoto} alt="" style={{ width: 40, height: 40, borderRadius: 10, objectFit: "cover", display: "block" }} />
                             : d.shown.length > 0
                             ? renderMiniMosaic(d.shown, 40, d.worn.length === 0)
@@ -2888,8 +2942,8 @@ export default function App() {
             {/* ── Chiffres parlants ── */}
             {(() => {
               const monthKey = todayKey().slice(0, 7);
-              const wornThisMonth = items.filter((i) => (i.wornDates || []).some((d) => new Date(d).toISOString().slice(0, 7) === monthKey)).length;
-              const neverWorn = items.filter((i) => (i.wornDates || []).length === 0).length;
+              const wornThisMonth = items.filter((i) => itemWornDays(i).some((d) => d.slice(0, 7) === monthKey)).length;
+              const neverWorn = items.filter((i) => itemWornDays(i).length === 0).length;
               const stats = [
                 { sort: "mois", n: wornThisMonth, label: `pièce${wornThisMonth > 1 ? "s" : ""} portée${wornThisMonth > 1 ? "s" : ""} ce mois-ci` },
                 { sort: "jamais", n: neverWorn, label: `jamais portée${neverWorn > 1 ? "s" : ""}` },
@@ -2909,6 +2963,48 @@ export default function App() {
                       <p className="text-xs" style={{ marginTop: 6, lineHeight: 1.3, color: "#777777" }}>{st.label}</p>
                     </button>
                   ))}
+                </div>
+              );
+            })()}
+
+            {/* ── Tes couleurs les plus portées (palette pondérée par le nombre de fois porté) ── */}
+            {(() => {
+              const stats = {};
+              items.forEach((i) => {
+                const n = itemWornDays(i).length;
+                if (!n) return;
+                itemColors(i).forEach((hex, k) => {
+                  const name = hexToColorName(hex);
+                  const w = k === 0 ? n : n * 0.5; // les couleurs de motif comptent pour moitié
+                  const c = stats[name] || (stats[name] = { name, w: 0, hexW: {} });
+                  c.w += w;
+                  c.hexW[hex] = (c.hexW[hex] || 0) + w;
+                });
+              });
+              const top = Object.values(stats).sort((x, y) => y.w - x.w).slice(0, 5);
+              if (top.length < 2) return null;
+              const total = top.reduce((t, c) => t + c.w, 0);
+              top.forEach((c) => { c.hex = Object.entries(c.hexW).sort((x, y) => y[1] - x[1])[0][0]; c.pct = Math.round((c.w / total) * 100); });
+              return (
+                <div className="mb-7">
+                  <div className="flex items-baseline justify-between mb-2.5">
+                    <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Tes couleurs</p>
+                    <p className="text-sm" style={{ color: COLORS.muted }}>les plus portées</p>
+                  </div>
+                  <div className="flex overflow-hidden mb-3" style={{ height: 14, borderRadius: 7 }}>
+                    {top.map((c) => (
+                      <span key={c.name} style={{ width: `${c.pct}%`, background: c.hex, borderRight: "2px solid #FFFFFF" }} />
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                    {top.map((c) => (
+                      <span key={c.name} className="inline-flex items-center gap-1.5 text-xs">
+                        <span style={{ width: 10, height: 10, borderRadius: 5, background: c.hex, border: "1px solid rgba(0,0,0,0.1)" }} />
+                        <span style={{ fontWeight: 600 }}>{c.name}</span>
+                        <span style={{ color: COLORS.muted }}>{c.pct} %</span>
+                      </span>
+                    ))}
+                  </div>
                 </div>
               );
             })()}
@@ -2977,46 +3073,49 @@ export default function App() {
             )}
 
 
-            {/* ── Synchro + sauvegarde, tout en bas, discrètes ── */}
-            <button
-              type="button"
-              onClick={() => { setSyncSetup({ code: "", step: syncCode ? "info" : "code", remote: null, busy: false, error: "" }); setShowSyncSheet(true); }}
-              className="w-full flex items-center justify-center gap-1.5 text-xs mt-4"
-              style={{ color: syncStatus === "error" || syncStatus === "offline" ? COLORS.rose : COLORS.muted, fontWeight: 600 }}
-            >
-              {syncStatus === "off" ? <Cloud size={13} /> : syncStatus === "error" || syncStatus === "offline" ? <CloudOff size={13} /> : <Cloud size={13} />}
-              {syncStatus === "off" && "Synchroniser téléphone et ordi"}
-              {syncStatus === "ok" && `Synchronisé ✓ ${formatSyncTime(syncedAt)}`}
-              {(syncStatus === "pending" || syncStatus === "saving") && "Enregistrement en ligne…"}
-              {syncStatus === "offline" && "Hors ligne : gardé sur l'appareil, envoi au retour du réseau"}
-              {syncStatus === "error" && "Synchro en pause : touche pour voir"}
-            </button>
-            <div className="flex items-center justify-center gap-5 mt-3 mb-2">
-              <button type="button" onClick={exportBackup} className="text-xs" style={{ color: COLORS.muted, fontWeight: 600 }}>
-                Sauvegarder mes données
-              </button>
-              <label className="text-xs cursor-pointer" style={{ color: COLORS.muted, fontWeight: 600 }}>
-                Restaurer
-                <input type="file" accept="application/json,.json" onChange={importBackup} className="hidden" />
-              </label>
-            </div>
-
             {/* ── Popup "tenue du jour" ── */}
             {openEntryId !== null && (() => {
-              const entry = agendaEntries.find((e) => e.entryId === openEntryId);
+              const idx = agendaEntries.findIndex((e) => e.entryId === openEntryId);
+              const entry = agendaEntries[idx];
               if (!entry) return null;
               const validated = isPlanValidatedToday(entry.planItems);
+              const prevE = agendaEntries[idx - 1];
+              const nextE = agendaEntries[idx + 1];
+              const go = (e) => { if (e) { setShowModalPicker(false); setOpenEntryId(e.entryId); } };
               return (
                 <div
                   onClick={() => setOpenEntryId(null)}
                   className="fixed inset-0 flex items-end justify-center"
                   style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
                 >
-                  {/* stopPropagation : un clic à l'intérieur de la popup ne doit pas la fermer */}
-                  <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
-                    <div className="flex items-center justify-between mb-4">
-                      <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>{entry.label}</p>
-                      <button onClick={() => setOpenEntryId(null)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                  {/* stopPropagation : un clic à l'intérieur de la popup ne doit pas la fermer. Glisser : tenue précédente / suivante */}
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => { daySwipeX.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }; }}
+                    onTouchEnd={(e) => {
+                      const start = daySwipeX.current;
+                      daySwipeX.current = null;
+                      if (!start) return;
+                      const dx = e.changedTouches[0].clientX - start.x;
+                      const dy = Math.abs(e.changedTouches[0].clientY - start.y);
+                      if (Math.abs(dx) < 60 || dy > 60) return;
+                      go(dx < 0 ? nextE : prevE);
+                    }}
+                    className="w-full max-w-md px-5 pt-3 pb-8"
+                    style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}
+                  ><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                    <div className="flex items-center justify-between gap-2 mb-4">
+                      <button onClick={() => go(prevE)} disabled={!prevE} aria-label="Tenue précédente" className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze, opacity: prevE ? 1 : 0.3 }}>
+                        <ArrowLeft size={15} />
+                      </button>
+                      <div className="flex-1 min-w-0 text-center">
+                        <p className="display truncate" style={{ fontWeight: 700, fontSize: 18 }}>{entry.label}</p>
+                        <p className="text-xs" style={{ color: COLORS.muted }}>{entry.dateStr === todayKey() ? "Aujourd'hui" : entry.dateStr === tomorrowKey() ? "Demain" : formatAgendaDate(entry.dateStr)}</p>
+                      </div>
+                      <button onClick={() => go(nextE)} disabled={!nextE} aria-label="Tenue suivante" className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze, opacity: nextE ? 1 : 0.3 }}>
+                        <ArrowLeft size={15} style={{ transform: "rotate(180deg)" }} />
+                      </button>
+                      <button onClick={() => setOpenEntryId(null)} aria-label="Fermer" className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze }}>
                         <X size={14} />
                       </button>
                     </div>
@@ -3116,6 +3215,14 @@ export default function App() {
                   <h1 className="display text-3xl" style={{ fontWeight: 700 }}>Garde-robe</h1>
                   <p className="text-sm mt-1" style={{ color: COLORS.muted }}>
                     {items.length} pièce{items.length > 1 ? "s" : ""}
+                    {items.some((i) => i.handmade) && (
+                      <>
+                        {" · "}
+                        <button type="button" onClick={() => { setCategoryView(ALL_ITEMS_VIEW); setCategorySort("faitmain"); }} className="inline-flex items-center gap-1" style={{ color: COLORS.rose, fontWeight: 600 }}>
+                          <Scissors size={12} /> {items.filter((i) => i.handmade).length} faite{items.filter((i) => i.handmade).length > 1 ? "s" : ""} main
+                        </button>
+                      </>
+                    )}
                   </p>
                 </div>
                 <button
@@ -3149,7 +3256,7 @@ export default function App() {
 
             {/* Barre de recherche, ouverte avec la loupe */}
             {showSearch && !categoryView && (
-              <div className="flex items-center gap-2 px-4 py-2.5 rounded-full mb-6" style={{ background: "#F3F2EF" }}>
+              <div className="flex items-center gap-2 px-4 py-2.5 rounded-full mb-3" style={{ background: "#F3F2EF" }}>
                 <Search size={15} style={{ opacity: 0.45 }} />
                 <input
                   autoFocus
@@ -3161,6 +3268,30 @@ export default function App() {
                 />
               </div>
             )}
+
+            {/* Tags, sous la recherche (ouverts avec la loupe) : un toucher ouvre toutes les pièces filtrées */}
+            {showSearch && !categoryView && items.length > 0 && (
+              <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2 overflow-x-auto mb-5">
+                {[
+                  { id: "favoris", label: "Favoris", icon: <Heart size={13} color={COLORS.rose} fill={COLORS.rose} /> },
+                  { id: "faitmain", label: "Fait main", icon: <Scissors size={13} color={COLORS.rose} /> },
+                  { id: "jamais", label: "Jamais portés" },
+                  { id: "mois", label: "Portées ce mois-ci" },
+                  ...TAG_SORTS,
+                ].map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => { setCategoryView(ALL_ITEMS_VIEW); setCategorySort(t.id); }}
+                    className="flex-shrink-0 px-4 h-9 rounded-full text-sm flex items-center gap-1.5"
+                    style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}
+                  >
+                    {t.icon}{t.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
 
             {searchQuery.trim() && !categoryView ? (
               /* ── Résultats de recherche ── */
@@ -3209,7 +3340,7 @@ export default function App() {
               /* ── Vue "Tout voir" d'une catégorie : grille à 3 colonnes ── */
               <div>
                 <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2 overflow-x-auto mb-4">
-                  {(categoryView === ALL_ITEMS_VIEW ? ALL_SORTS : CATEGORY_SORTS).map((s) => {
+                  {(categoryView === ALL_ITEMS_VIEW ? [...ALL_SORTS, ...TAG_SORTS] : [...CATEGORY_SORTS, ...TAG_SORTS]).map((s) => {
                     const active = categorySort === s.id;
                     return (
                       <button
@@ -3232,7 +3363,7 @@ export default function App() {
                 </div>
                 {categoryItems.length === 0 ? (
                   <p className="text-sm py-10 text-center" style={{ color: COLORS.muted }}>
-                    {categorySort === "favoris" ? "Aucun favori" : categorySort === "jamais" ? "Tout a déjà été porté ✓" : categorySort === "mois" ? "Rien de porté ce mois-ci" : "Vide"}
+                    {categorySort === "favoris" ? "Aucun favori" : categorySort === "jamais" ? "Tout a déjà été porté ✓" : categorySort === "mois" ? "Rien de porté ce mois-ci" : categorySort === "faitmain" ? "Aucune pièce faite main ici" : categorySort.includes(":") ? `Aucune pièce taguée « ${categorySort.slice(2)} »` : "Vide"}
                   </p>
                 ) : (
                   <div className="grid grid-cols-3 gap-2">
@@ -3248,7 +3379,7 @@ export default function App() {
         {view === "dressing" && detailItem && (() => {
           const it = detailItem;
           const update = (patch) => setItems((prev) => prev.map((i) => (i.id === it.id ? { ...i, ...(typeof patch === "function" ? patch(i) : patch) } : i)));
-          const worn = it.wornDates || [];
+          const worn = itemWornDays(it);
           const wornToday = worn.some((d) => new Date(d).toDateString() === new Date().toDateString());
           const withOutfits = outfitsByRecent.filter((o) => (o.itemIds || []).includes(it.id));
           const monthKey = todayKey().slice(0, 7);
@@ -3369,6 +3500,13 @@ export default function App() {
                   >
                     {CATEGORIES.map((c) => <option key={c} value={c}>{catLabel(c)}</option>)}
                   </select>
+                </div>
+
+                <div className="flex items-center justify-between py-3" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                  <span className="flex items-center gap-2" style={{ fontSize: 15, fontWeight: 600 }}>
+                    <Scissors size={16} color={COLORS.rose} /> Fait main
+                  </span>
+                  {renderSwitch(!!it.handmade, () => update((i) => ({ handmade: !i.handmade })), "Fait main")}
                 </div>
 
                 <div className="py-4" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
@@ -3636,7 +3774,7 @@ export default function App() {
               const validated = isWornToday(outfit);
               const pieces = itemsForOutfit(outfit);
               const pal = outfitPalette(outfit);
-              const worn = outfit.wornDates || [];
+              const worn = outfitWornDays(outfit);
               const monthKey = todayKey().slice(0, 7);
               const wornThisMonth = worn.filter((d) => new Date(d).toISOString().slice(0, 7) === monthKey).length;
               const lastWorn = worn.length ? worn.reduce((a, b) => (new Date(a) > new Date(b) ? a : b)) : null;
@@ -4139,6 +4277,12 @@ export default function App() {
                         ))}
                       </div>
                     </div>
+                    <div className="w-full flex items-center justify-between py-1">
+                      <span className="flex items-center gap-2 text-sm" style={{ fontWeight: 600 }}>
+                        <Scissors size={15} color={COLORS.rose} /> Fait main
+                      </span>
+                      {renderSwitch(!!form.handmade, () => setForm((f) => ({ ...f, handmade: !f.handmade })), "Fait main")}
+                    </div>
                     <button type="submit" className="w-full flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold text-white" style={{ background: COLORS.rose }}>
                       <Plus size={16} /> Ajouter
                     </button>
@@ -4277,6 +4421,82 @@ export default function App() {
                       </>
                     )}
                   </form>
+                </div>
+              </div>
+            )}
+
+            {/* ── Paramètres ── */}
+            {showSettings && (
+              <div onClick={() => setShowSettings(false)} className="fixed inset-0 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.4)", zIndex: 52 }}>
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
+                  <div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Paramètres</p>
+                    <button onClick={() => setShowSettings(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                      <X size={14} />
+                    </button>
+                  </div>
+
+                  {/* Prénom */}
+                  <div className="flex items-center justify-between gap-3 py-3" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                    <span style={{ fontSize: 15, fontWeight: 600 }}>Prénom</span>
+                    <input
+                      defaultValue={userName || ""}
+                      onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== userName) { try { localStorage.setItem("mon-armoire-username", v); } catch {} setUserName(v); } }}
+                      className="text-sm text-right rounded-xl px-3"
+                      style={{ height: 36, width: 160, background: COLORS.haze, border: "none", outline: "none" }}
+                    />
+                  </div>
+
+                  {/* Météo */}
+                  <div className="flex items-center justify-between gap-3 py-3" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                    <div>
+                      <p style={{ fontSize: 15, fontWeight: 600 }}>Météo</p>
+                      <p className="text-xs" style={{ color: COLORS.muted }}>
+                        {weatherStatus === "granted" ? `Activée${weatherCity ? ` · ${weatherCity}` : ""}` : weatherStatus === "loading" ? "Recherche…" : weatherStatus === "denied" ? "Localisation refusée" : "Pas encore activée"}
+                      </p>
+                    </div>
+                    <button type="button" onClick={requestWeather} className="px-4 h-9 rounded-full text-sm" style={{ background: COLORS.haze, fontWeight: 600 }}>
+                      {weatherStatus === "granted" ? "Actualiser" : "Activer"}
+                    </button>
+                  </div>
+
+                  {/* Synchro */}
+                  <div className="flex items-center justify-between gap-3 py-3" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                    <div className="min-w-0">
+                      <p style={{ fontSize: 15, fontWeight: 600 }}>Synchro téléphone et ordi</p>
+                      <p className="text-xs" style={{ color: syncStatus === "error" || syncStatus === "offline" ? COLORS.rose : COLORS.muted }}>
+                        {syncStatus === "off" && "Désactivée"}
+                        {syncStatus === "ok" && `Synchronisé ✓ ${formatSyncTime(syncedAt)}`}
+                        {(syncStatus === "pending" || syncStatus === "saving") && "Enregistrement en ligne…"}
+                        {syncStatus === "offline" && "Hors ligne : gardé sur l'appareil"}
+                        {syncStatus === "error" && "En pause"}
+                      </p>
+                    </div>
+                    <button type="button" onClick={() => { setSyncSetup({ code: "", step: syncCode ? "info" : "code", remote: null, busy: false, error: "" }); setShowSyncSheet(true); }} className="px-4 h-9 rounded-full text-sm flex-shrink-0" style={{ background: COLORS.haze, fontWeight: 600 }}>
+                      {syncCode ? "Gérer" : "Activer"}
+                    </button>
+                  </div>
+
+                  {/* Sauvegarde */}
+                  <div className="py-3" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                    <p style={{ fontSize: 15, fontWeight: 600 }}>Sauvegarde</p>
+                    <p className="text-xs mb-3" style={{ color: COLORS.muted }}>Un fichier avec tes vêtements, tenues et agenda.</p>
+                    <div className="flex gap-2">
+                      <button type="button" onClick={exportBackup} className="flex-1 h-10 rounded-full text-sm" style={{ background: COLORS.ink, color: "#FFFFFF", fontWeight: 600 }}>
+                        Sauvegarder
+                      </button>
+                      <label className="flex-1 h-10 rounded-full text-sm flex items-center justify-center cursor-pointer" style={{ background: COLORS.haze, fontWeight: 600 }}>
+                        Restaurer
+                        <input type="file" accept="application/json,.json" onChange={importBackup} className="hidden" />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-center gap-2 pt-5">
+                    <PliLogo size={22} />
+                    <span className="text-xs" style={{ color: COLORS.muted }}>pli · pli-carnet.vercel.app</span>
+                  </div>
                 </div>
               </div>
             )}
@@ -4543,7 +4763,7 @@ export default function App() {
                       <div className="mb-4">
                         {wizardFromOutfitId && (() => {
                           const o = outfits.find((x) => x.id === wizardFromOutfitId);
-                          const n = o ? (o.wornDates || []).length : 0;
+                          const n = o ? outfitWornDays(o).length : 0;
                           return (
                             <p className="text-xs mb-3 px-3 py-2 rounded-full inline-flex items-center gap-1.5" style={{ background: "#FDE8E5", color: COLORS.ink }}>
                               <Heart size={12} color={COLORS.rose} fill={COLORS.rose} />
