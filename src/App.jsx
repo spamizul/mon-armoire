@@ -3697,7 +3697,7 @@ export default function App() {
                       <Camera size={20} color={COLORS.rose} />
                     </span>
                     <p className="display" style={{ fontWeight: 700, fontSize: 17 }}>Ton carnet est vide</p>
-                    <p className="text-sm" style={{ color: COLORS.muted }}>Prends-toi en photo avec ta tenue du jour : un selfie miroir suffit.</p>
+                    <p className="text-sm" style={{ color: COLORS.muted }}>Prends-toi en photo avec ta tenue du jour.</p>
                   </div>
                 );
               }
