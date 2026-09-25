@@ -1889,6 +1889,11 @@ export default function App() {
 
   // Dégradé de la bannière de la page Aujourd'hui, fabriqué à partir des couleurs des vêtements
   // prévus aujourd'hui. Corail uni si rien n'est encore planifié.
+  // Palette d'une ou plusieurs tenues de l'agenda (couleurs des pièces, sans doublon).
+  function entriesPalette(entries, max = 5) {
+    return [...new Set(entries.flatMap((e) => e.planItems).flatMap(itemColors).map((h) => h.toLowerCase()))].slice(0, max);
+  }
+
   // "Palette du jour" : les couleurs des vêtements prévus aujourd'hui (5 max, sans doublon).
   function todayPalette() {
     const todayItems = todayEntries.flatMap((e) => e.planItems).filter(Boolean);
@@ -3844,8 +3849,9 @@ export default function App() {
                         style={{ borderRadius: 18, background: COLORS.haze, breakInside: "avoid" }}
                       >
                         <img loading="lazy" decoding="async" src={entry.wornPhoto} alt="" style={{ width: "100%", display: "block" }} />
-                        <span className="absolute text-xs" style={{ left: 8, bottom: 8, padding: "3px 9px", borderRadius: 999, background: "rgba(255,255,255,0.92)", fontWeight: 600 }}>
+                        <span className="absolute text-xs flex items-center gap-1.5" style={{ left: 8, bottom: 8, padding: "3px 9px", borderRadius: 999, background: "rgba(255,255,255,0.92)", fontWeight: 600 }}>
                           {formatShortDate(entry.dateStr)}
+                          {entry.planItems.length > 0 && renderPaletteDots(entriesPalette([entry], 4), 10, "#FFFFFF")}
                         </span>
                       </button>
                     ))}
@@ -3886,7 +3892,9 @@ export default function App() {
                 {buildCalendarCells(calendarMonth).map((day, i) => {
                   if (day === null) return <div key={i} />;
                   const dateKey = toDateKey(calendarMonth.getFullYear(), calendarMonth.getMonth(), day);
-                  const hasEntries = agendaEntries.some((e) => e.dateStr === dateKey);
+                  const dayEntries = agendaEntries.filter((e) => e.dateStr === dateKey);
+                  const hasEntries = dayEntries.length > 0;
+                  const dayPal = entriesPalette(dayEntries, 3);
                   const isToday = dateKey === todayKey();
                   return (
                     <button
@@ -3894,17 +3902,19 @@ export default function App() {
                       onClick={() => setDayViewDate(dateKey)}
                       className="aspect-square rounded-md flex flex-col items-center justify-center relative text-[11px]"
                       style={{
-                        background: isToday ? COLORS.ink : hasEntries ? "#FDE8E5" : "transparent",
-                        color: isToday ? "white" : hasEntries ? COLORS.rose : COLORS.ink,
-                        fontWeight: hasEntries || isToday ? 600 : 400,
+                        background: isToday ? COLORS.ink : hasEntries ? "#FFFFFF" : "transparent",
+                        color: isToday ? "white" : COLORS.ink,
+                        fontWeight: hasEntries || isToday ? 700 : 400,
                       }}
                     >
-                      {day}
+                      <span style={{ marginTop: hasEntries ? -6 : 0 }}>{day}</span>
+                      {/* Mini palette de la tenue du jour (ou point corail si c'est juste une photo) */}
                       {hasEntries && (
-                        <span
-                          className="absolute rounded-full"
-                          style={{ bottom: 2, width: 5, height: 5, background: isToday ? "white" : COLORS.rose }}
-                        />
+                        <span className="absolute flex" style={{ bottom: 4, paddingLeft: 3 }}>
+                          {(dayPal.length ? dayPal : [COLORS.rose]).map((hex) => (
+                            <span key={hex} style={{ width: 7, height: 7, borderRadius: 4, background: hex, marginLeft: -3, boxShadow: `0 0 0 1px ${isToday ? COLORS.ink : "#FFFFFF"}` }} />
+                          ))}
+                        </span>
                       )}
                     </button>
                   );
@@ -3967,8 +3977,9 @@ export default function App() {
                               )
                             ))}
                           </div>
-                          <p className="text-xs mt-1.5" style={{ color: isToday ? COLORS.rose : COLORS.muted, fontWeight: isToday ? 600 : 400 }}>
-                            {formatShortDate(entry.dateStr)}
+                          <p className="text-xs mt-1.5 flex items-center justify-between gap-1" style={{ color: isToday ? COLORS.rose : COLORS.muted, fontWeight: isToday ? 600 : 400 }}>
+                            <span className="truncate">{formatShortDate(entry.dateStr)}</span>
+                            {entry.planItems.length > 0 && renderPaletteDots(entriesPalette([entry], 4), 9)}
                           </p>
                         </button>
                       );
