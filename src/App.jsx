@@ -1966,9 +1966,63 @@ export default function App() {
     5: [[4, 4, 44, 48, -3], [50, 3, 46, 44, 3], [4, 54, 34, 42, 2], [36, 50, 30, 38, -2], [66, 50, 31, 44, 3]],
     6: [[3, 4, 32, 44, -3], [35, 3, 31, 44, 2], [67, 5, 30, 42, -2], [3, 52, 32, 44, 2], [35, 51, 31, 44, -2], [67, 52, 30, 43, 3]],
   };
+  // Tenue avec des pièces détourées : on les pose en "silhouette" et elles se chevauchent,
+  // comme une vraie tenue étalée sur un lit (veste derrière, haut sur le bas, chaussures en bas…).
+  // Positions en % : gauche, haut, largeur, hauteur, rotation, profondeur (z).
+  const SILHOUETTE_SLOTS = {
+    Veste: [6, 5, 50, 56, -6, 1],
+    Haut: [28, 3, 48, 44, 2, 3],
+    Chemise: [28, 3, 48, 46, 2, 3],
+    Pull: [28, 3, 48, 46, 2, 3],
+    Robe: [26, 3, 50, 74, 1, 3],
+    Bas: [30, 32, 42, 62, -2, 2],
+    Chaussures: [64, 68, 32, 28, 8, 4],
+    Accessoire: [5, 64, 28, 30, -8, 4],
+  };
+  function renderSilhouette(list, height) {
+    const used = {};
+    return (
+      <div style={{ position: "relative", height, borderRadius: 18, background: "#FFFFFF", overflow: "hidden" }}>
+        {list.map((item) => {
+          const cat = effectiveCategory(item);
+          const base = SILHOUETTE_SLOTS[cat] || SILHOUETTE_SLOTS.Accessoire;
+          // Deuxième pièce de la même catégorie : légèrement décalée pour qu'on voie les deux.
+          const n = used[cat] = (used[cat] || 0) + 1;
+          const [l, t, w, h, r, z] = base;
+          const shift = (n - 1) * 14;
+          const cut = isCutout(item);
+          return (
+            <div
+              key={item.id}
+              style={{
+                position: "absolute", left: `${Math.min(l + shift, 100 - w)}%`, top: `${t + (n - 1) * 6}%`, width: `${w}%`, height: `${h}%`,
+                transform: `rotate(${r + (n - 1) * 6}deg)`, zIndex: z * 10 + n,
+                ...(cut ? {} : { borderRadius: 14, overflow: "hidden", boxShadow: "0 4px 14px rgba(0,0,0,0.12)", background: item.hex }),
+              }}
+            >
+              {item.photo && (
+                <img
+                  loading="lazy"
+                  decoding="async"
+                  src={item.photo}
+                  alt={item.name}
+                  style={cut
+                    ? { width: "100%", height: "100%", objectFit: "contain", display: "block", filter: "drop-shadow(0 5px 8px rgba(0,0,0,0.2))" }
+                    : { width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   function renderFlatLay(planItems, height) {
     const order = (i) => CATEGORIES.indexOf(i.category);
     const list = [...planItems].sort((a, b) => order(a) - order(b)).slice(0, 6);
+    // Au moins la moitié des pièces détourées → version "silhouette" qui se chevauche.
+    if (list.filter(isCutout).length * 2 >= list.length) return renderSilhouette(list, height);
     const layout = FLATLAY_LAYOUTS[list.length] || FLATLAY_LAYOUTS[6];
     return (
       <div style={{ position: "relative", height, borderRadius: 18, background: "#FFFFFF", overflow: "hidden" }}>
@@ -2229,7 +2283,6 @@ export default function App() {
           <Camera size={18} color={COLORS.rose} />
         </span>
         <span className="text-sm" style={{ fontWeight: 600 }}>{busy ? "Envoi en cours…" : "Ajouter la photo portée"}</span>
-        <span className="text-xs" style={{ color: COLORS.muted }}>Un selfie miroir suffit</span>
         <input type="file" accept="image/*" onChange={(ev) => handleWornPhoto(ev, entry.dateStr, entry.entryId)} className="hidden" />
       </label>
     );
@@ -4659,14 +4712,7 @@ export default function App() {
               >
                 <div className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                   <div className="flex items-center justify-between mb-4">
-                    <div>
-                      <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Recadrer la photo</p>
-                      {cropInfo && (
-                        <p className="text-xs" style={{ color: cropInfo.transparent ? COLORS.rose : COLORS.muted, fontWeight: 600 }}>
-                          {cropInfo.transparent ? "Fond transparent détecté ✓" : `Pas de transparence (${cropInfo.type})`}
-                        </p>
-                      )}
-                    </div>
+                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Recadrer la photo</p>
                     <button onClick={() => { setShowCropModal(false); setRawImageSrc(null); }} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
                       <X size={14} />
                     </button>
