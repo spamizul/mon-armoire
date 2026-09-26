@@ -165,6 +165,18 @@ function hexDistance(a, b) {
   return Math.sqrt((x[0] - y[0]) ** 2 + (x[1] - y[1]) ** 2 + (x[2] - y[2]) ** 2);
 }
 
+// Deux couleurs "jumelles" : très proches, même nom de couleur, et même teinte
+// (un bleu très pâle et un jaune très pâle ne sont PAS jumeaux, même s'ils sont proches en clarté).
+function sameColor(a, b) {
+  if (hexDistance(a, b) > 32) return false;
+  if (hexToColorName(a) !== hexToColorName(b)) return false;
+  const x = hexToHsl(a);
+  const y = hexToHsl(b);
+  if (x.s < 0.12 && y.s < 0.12) return true; // blancs, gris, noirs : pas de teinte à comparer
+  const dh = Math.abs(x.h - y.h);
+  return Math.min(dh, 360 - dh) < 18;
+}
+
 // ── Photos détourées (fond transparent) ──
 // Vrai si l'image dessinée sur ce canvas a des zones transparentes (vêtement détouré).
 function canvasHasTransparency(canvas) {
@@ -529,6 +541,8 @@ export default function App() {
   const [outfitDup, setOutfitDup] = useState(null);
   // Fiche tenue : sélecteur pour ajouter / retirer des pièces.
   const [outfitPiecePicker, setOutfitPiecePicker] = useState(false);
+  const [reusableDup, setReusableDup] = useState(null);
+  useEffect(() => { setReusableDup(null); }, [openEntryId, showQuickPlanModal, planItemIds]);
   useEffect(() => { setItemDup(null); }, [form.name, form.photo, form.category, form.hex]);
   useEffect(() => { setOutfitDup(null); }, [selectedIds]);
   // Id de l'entrée d'agenda dont la photo portée est en cours d'envoi ("new" pour une nouvelle).
@@ -920,7 +934,7 @@ export default function App() {
         let score = 0;
         if (cand.photoHash && i.photoHash && fingerprintDistance(cand.photoHash, i.photoHash) <= 6) score = 3;
         else if (normalizeName(cand.name) && normalizeName(cand.name) === normalizeName(i.name)) score = 2;
-        else if (effectiveCategory(i) === candCat && hexDistance(cand.hex, i.hex) < 40 && words.some((w) => normalizeName(i.name).split(" ").includes(w))) score = 1;
+        else if (effectiveCategory(i) === candCat && sameColor(cand.hex, i.hex) && words.some((w) => normalizeName(i.name).split(" ").includes(w))) score = 1;
         return { item: i, score };
       })
       .filter((m) => m.score > 0)
@@ -1358,25 +1372,80 @@ export default function App() {
   // Logique d'enregistrement d'une tenue, réutilisable depuis le formulaire
   // classique ET depuis la popup du générateur.
   // Tenue existante identique (mêmes pièces) ou très proche (une seule pièce de différence).
+  // Compare une sélection de pièces à tes tenues enregistrées :
+  // - "exact" : exactement les mêmes pièces ;
+  // - "twin"  : même look avec des pièces jumelles (ex. deux chemises blanches différentes :
+  //             même catégorie, couleur très proche) ;
   function findSimilarOutfit(itemIds, excludeId) {
     const ids = [...new Set(itemIds)];
-    let close = null;
+    const byId = (id) => items.find((i) => i.id === id);
+    let twin = null;
     for (const o of outfits) {
       if (o.id === excludeId) continue;
       const oi = [...new Set(o.itemIds || [])];
-      const common = ids.filter((id) => oi.includes(id)).length;
-      if (common === ids.length && common === oi.length) return { outfit: o, exact: true, diff: [] };
-      if (!close && Math.min(ids.length, oi.length) >= 3 && common >= Math.max(ids.length, oi.length) - 1) {
-        const diff = [...ids.filter((id) => !oi.includes(id)), ...oi.filter((id) => !ids.includes(id))];
-        close = { outfit: o, exact: false, diff };
+      const onlyNew = ids.filter((id) => !oi.includes(id));
+      const onlyOld = oi.filter((id) => !ids.includes(id));
+      if (!onlyNew.length && !onlyOld.length) return { outfit: o, kind: "exact", exact: true, diff: [], pairs: [] };
+      // Même look : les pièces qui diffèrent sont soit des "jumelles" (même catégorie, même couleur),
+      // soit juste des chaussures ou des accessoires (changer de chaussures ne change pas la tenue).
+      if (!twin && ids.length >= 2) {
+        const MINOR = ["Chaussures", "Accessoire"];
+        const isMinor = (id) => { const x = byId(id); return x && MINOR.includes(effectiveCategory(x)); };
+        const leftOld = [...onlyOld];
+        const leftNew = [];
+        const pairs = [];
+        for (const nid of onlyNew) {
+          const n = byId(nid);
+          const k = leftOld.findIndex((oid) => { const x = byId(oid); return n && x && effectiveCategory(n) === effectiveCategory(x) && sameColor(n.hex, x.hex); });
+          if (k === -1) leftNew.push(nid);
+          else { pairs.push([leftOld[k], nid]); leftOld.splice(k, 1); }
+        }
+        const mainShared = ids.filter((id) => !isMinor(id)).length > 0;
+        if (mainShared && leftNew.every(isMinor) && leftOld.every(isMinor)) {
+          twin = { outfit: o, kind: "twin", exact: false, diff: [...onlyNew, ...onlyOld], pairs, minorNew: leftNew, minorOld: leftOld };
+        }
       }
     }
-    return close;
+    return twin;
   }
-  // "une pièce change : Baskets blanches ↔ Bottines"
+  // Texte qui explique la différence : "Chemise blanche ↔ Chemise blanche en lin".
   function describeOutfitDiff(m) {
-    const names = m.diff.map((id) => items.find((i) => i.id === id)).filter(Boolean).map((i) => i.name);
-    return names.length ? `seule différence : ${names.join(" / ")}` : "";
+    const name = (id) => (items.find((i) => i.id === id) || {}).name || "?";
+    const parts = (m.pairs || []).map(([a, b]) => `${name(b)} au lieu de ${name(a)}`);
+    const mn = m.minorNew || [];
+    const mo = m.minorOld || [];
+    if (mn.length && mo.length) parts.push(`${mn.map(name).join(", ")} au lieu de ${mo.map(name).join(", ")}`);
+    else if (mn.length) parts.push(`avec ${mn.map(name).join(", ")} en plus`);
+    else if (mo.length) parts.push(`sans ${mo.map(name).join(", ")}`);
+    return parts.join(" · ");
+  }
+  // Encadré "doublon de tenue", affiché dans le formulaire en cours (comme pour les vêtements).
+  function renderOutfitDupPanel(m, { onView, onForce, forceLabel = "Enregistrer quand même" }) {
+    const title = m.kind === "exact" ? `Elle existe déjà : « ${m.outfit.name} »` : m.kind === "twin" ? `Même look que « ${m.outfit.name} »` : `Presque comme « ${m.outfit.name} »`;
+    const pieces = itemsForOutfit(m.outfit).slice(0, 4);
+    return (
+      <div className="p-3 rounded-2xl mb-3 w-full" style={{ background: "#FDE8E5" }}>
+        <div className="flex items-center gap-2.5 mb-2">
+          <span className="grid overflow-hidden flex-shrink-0" style={{ width: 44, height: 44, borderRadius: 12, gridTemplateColumns: pieces.length > 1 ? "1fr 1fr" : "1fr", gap: 1, background: "#FFFFFF" }}>
+            {pieces.map((it) => (
+              <span key={it.id} style={{ background: it.photo ? COLORS.haze : it.hex, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
+                {it.photo && <img src={thumbOf(it)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+              </span>
+            ))}
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm" style={{ fontWeight: 700 }}>{title}</p>
+            {m.kind !== "exact" && <p className="text-xs" style={{ color: "#555555" }}>{describeOutfitDiff(m)}</p>}
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button type="button" onClick={onView} className="flex-1 h-10 rounded-full text-sm" style={{ background: "#FFFFFF", fontWeight: 600 }}>Voir</button>
+          {m.kind !== "exact" && onForce && (
+            <button type="button" onClick={onForce} className="flex-1 h-10 rounded-full text-sm" style={{ background: COLORS.ink, color: "#FFFFFF", fontWeight: 600 }}>{forceLabel}</button>
+          )}
+        </div>
+      </div>
+    );
   }
 
   function commitOutfit() {
@@ -1435,14 +1504,7 @@ export default function App() {
   function saveOutfit(e, force = false) {
     if (e) e.preventDefault();
     const m = findSimilarOutfit(selectedIds);
-    if (m && m.exact) {
-      // Mêmes pièces qu'une tenue existante : pas de doublon, on la montre.
-      setShowOutfitForm(false);
-      setOutfitDup(null);
-      showToast({ text: `Elle existe déjà : « ${m.outfit.name} »`, action: "Voir", onAction: () => { changeView("tenues"); setDetailOutfitId(m.outfit.id); } });
-      return;
-    }
-    if (m && !force) { setOutfitDup(m); return; }
+    if (m && m.exact) return; // doublon parfait : l'encadré est déjà affiché, rien à enregistrer
     commitOutfit();
     setOutfitDup(null);
     setShowOutfitForm(false);
@@ -1858,7 +1920,7 @@ export default function App() {
   }
 
   // Enregistre directement la tenue affichée en résultat, puis referme toute la popup.
-  function wizardSaveOutfit() {
+  function wizardSaveOutfit(force = false) {
     if (wizardTargetDate) {
       planItemsOnDate(wizardTargetDate, selectedIds, outfitName, wizardFromOutfitId || undefined);
     } else if (wizardFromOutfitId) {
@@ -1871,7 +1933,6 @@ export default function App() {
         changeView("tenues");
         setDetailOutfitId(m.outfit.id);
       } else {
-        if (m && !window.confirm(`Presque comme « ${m.outfit.name} » (${describeOutfitDiff(m)}).\n\nL'enregistrer quand même ?`)) return;
         commitOutfit();
         showToast({ text: "Tenue enregistrée ✓", action: "Voir", onAction: () => changeView("tenues") });
       }
@@ -2322,8 +2383,9 @@ export default function App() {
   // Ajoute en plus cette sélection à la collection de tenues réutilisables (onglet Tenues).
   // Si dateStr/entryId sont fournis, on relie aussi l'entrée d'agenda à cette nouvelle tenue
   // (pour que "Portée aujourd'hui" reste synchronisé, comme pour une tenue créée normalement).
-  function saveAsReusableOutfit(itemIds, label, dateStr, entryId) {
-    if (itemIds.length === 0) return;
+  // Renvoie false si on attend une réponse sur un doublon (encadré affiché), true sinon.
+  function saveAsReusableOutfit(itemIds, label, dateStr, entryId, force = false) {
+    if (itemIds.length === 0) return true;
     const m = findSimilarOutfit(itemIds);
     if (m && m.exact) {
       // Déjà dans la collection : on relie simplement l'entrée d'agenda à cette tenue.
@@ -2331,9 +2393,11 @@ export default function App() {
         setAgenda((prev) => ({ ...prev, [dateStr]: normalizeDayEntries(prev[dateStr]).map((e) => (e.id === entryId ? { ...e, outfitId: m.outfit.id } : e)) }));
       }
       showToast({ text: `Déjà dans tes tenues : « ${m.outfit.name} »` });
-      return;
+      setReusableDup(null);
+      return true;
     }
-    if (m && !window.confirm(`Presque comme « ${m.outfit.name} » (${describeOutfitDiff(m)}).\n\nL'ajouter quand même ?`)) return;
+    if (m && !force) { setReusableDup({ m, itemIds, label, dateStr, entryId }); return false; }
+    setReusableDup(null);
     const newOutfitId = Date.now() + 1;
     const newOutfit = { id: newOutfitId, name: label.trim() || nextOutfitName(), itemIds, favorite: false, wornDates: [], weather: [], occasions: [] };
     setOutfits((prev) => [...prev, newOutfit]);
@@ -2344,6 +2408,8 @@ export default function App() {
         [dateStr]: normalizeDayEntries(prev[dateStr]).map((e) => (e.id === entryId ? { ...e, outfitId: newOutfitId } : e)),
       }));
     }
+    showToast({ text: "Ajoutée à tes tenues ✓" });
+    return true;
   }
 
   // Petit message en bas de l'écran, qui disparaît tout seul.
@@ -3319,6 +3385,11 @@ export default function App() {
                         <Plus size={13} /> Ajouter à ma collection de tenues
                       </button>
                     )}
+                    {reusableDup && reusableDup.entryId === entry.entryId && renderOutfitDupPanel(reusableDup.m, {
+                      onView: () => { setOpenEntryId(null); setReusableDup(null); changeView("tenues"); setDetailOutfitId(reusableDup.m.outfit.id); },
+                      onForce: () => saveAsReusableOutfit(reusableDup.itemIds, reusableDup.label, reusableDup.dateStr, reusableDup.entryId, true),
+                      forceLabel: "L'ajouter quand même",
+                    })}
 
                     {entry.dateStr === todayKey() ? (
                       <button
@@ -4620,17 +4691,13 @@ export default function App() {
 
                         {renderOutfitTagPicker()}
 
-                        {outfitDup && (
-                          <div className="p-3 rounded-2xl mb-3" style={{ background: "#FDE8E5" }}>
-                            <p className="text-sm" style={{ fontWeight: 700 }}>Presque comme « {outfitDup.outfit.name} »</p>
-                            <p className="text-xs mb-3" style={{ color: "#555555" }}>{describeOutfitDiff(outfitDup)}</p>
-                            <div className="flex gap-2">
-                              <button type="button" onClick={() => { setShowOutfitForm(false); setOutfitDup(null); changeView("tenues"); setDetailOutfitId(outfitDup.outfit.id); }} className="flex-1 h-10 rounded-full text-sm" style={{ background: "#FFFFFF", fontWeight: 600 }}>Voir</button>
-                              <button type="button" onClick={() => saveOutfit(null, true)} className="flex-1 h-10 rounded-full text-sm" style={{ background: COLORS.ink, color: "#FFFFFF", fontWeight: 600 }}>Enregistrer quand même</button>
-                            </div>
-                          </div>
-                        )}
-                        <button type="submit" disabled={!outfitName.trim() || selectedIds.length === 0} className="w-full flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold text-white" style={{ background: COLORS.rose, opacity: !outfitName.trim() || selectedIds.length === 0 ? 0.4 : 1 }}>
+                        {/* Vérifié en direct : l'encadré apparaît dès que la sélection ressemble à une tenue existante */}
+                        {(() => {
+                          const m = findSimilarOutfit(selectedIds);
+                          if (!m) return null;
+                          return renderOutfitDupPanel(m, { onView: () => { setShowOutfitForm(false); changeView("tenues"); setDetailOutfitId(m.outfit.id); } });
+                        })()}
+                        <button type="submit" disabled={!outfitName.trim() || selectedIds.length === 0 || !!(findSimilarOutfit(selectedIds) || {}).exact} className="w-full flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold text-white" style={{ background: COLORS.rose, opacity: !outfitName.trim() || selectedIds.length === 0 || !!(findSimilarOutfit(selectedIds) || {}).exact ? 0.4 : 1 }}>
                           <Plus size={16} /> Enregistrer la tenue
                         </button>
                         <div className="h-6" />
@@ -5041,12 +5108,18 @@ export default function App() {
 
                         {!wizardTargetDate && !wizardFromOutfitId && renderOutfitTagPicker()}
 
+                        {!wizardTargetDate && !wizardFromOutfitId && (() => {
+                          const m = findSimilarOutfit(selectedIds);
+                          if (!m || m.exact) return null;
+                          return renderOutfitDupPanel(m, { onView: () => { setShowWizard(false); changeView("tenues"); setDetailOutfitId(m.outfit.id); } });
+                        })()}
+
                         <div className="flex gap-2">
                           <button onClick={wizardGenerate} className="flex items-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold" style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}>
                             <Sparkles size={14} /> Régénérer
                           </button>
                           <button
-                            onClick={wizardSaveOutfit}
+                            onClick={() => wizardSaveOutfit()}
                             disabled={selectedIds.length === 0 || (!wizardTargetDate && !outfitName.trim())}
                             className="flex-1 px-5 h-12 rounded-full text-sm font-bold text-white"
                             style={{ background: COLORS.rose, opacity: (selectedIds.length === 0 || (!wizardTargetDate && !outfitName.trim())) ? 0.4 : 1 }}
@@ -5497,11 +5570,23 @@ export default function App() {
                         Garder aussi dans mes tenues
                       </label>
 
-                      <button
-                        onClick={() => {
-                          if (alsoSaveOutfit) saveAsReusableOutfit(planItemIds, planLabel);
+                      {reusableDup && !reusableDup.entryId && renderOutfitDupPanel(reusableDup.m, {
+                        onView: () => { setShowQuickPlanModal(false); setReusableDup(null); changeView("tenues"); setDetailOutfitId(reusableDup.m.outfit.id); },
+                        onForce: () => {
+                          saveAsReusableOutfit(planItemIds, planLabel, undefined, undefined, true);
                           planItemsOnDate(planDate, planItemIds, planLabel);
                           setAlsoSaveOutfit(false);
+                          setShowQuickPlanModal(false);
+                        },
+                        forceLabel: "Planifier et l'ajouter",
+                      })}
+                      <button
+                        onClick={() => {
+                          // Doublon possible : on montre l'encadré au-dessus et on attend la réponse.
+                          if (alsoSaveOutfit && !reusableDup && !saveAsReusableOutfit(planItemIds, planLabel)) return;
+                          planItemsOnDate(planDate, planItemIds, planLabel);
+                          setAlsoSaveOutfit(false);
+                          setReusableDup(null);
                           setShowQuickPlanModal(false);
                         }}
                         disabled={planItemIds.length === 0}
