@@ -637,6 +637,7 @@ export default function App() {
   // Quelle tenue est actuellement affichée en fiche détaillée (null = aucune).
   const [detailOutfitId, setDetailOutfitId] = useState(null);
   useEffect(() => { setOutfitTab("apropos"); setOutfitMenuOpen(false); setOutfitPiecePicker(false); }, [detailOutfitId]);
+
   // Popup de sélection des vêtements "qui vont bien avec" celui affiché en fiche.
   const [showPairsModal, setShowPairsModal] = useState(false);
 
@@ -3538,7 +3539,7 @@ export default function App() {
         )}
 
         {/* ══════════════════ VUE DRESSING ══════════════════ */}
-        {view === "dressing" && !detailItem && (
+        {view === "dressing" && (
           <div key={view + (categoryView || "")} className={categoryView ? "slide-right" : slideDir === "right" ? "slide-right" : "slide-left"}>
             {/* En-tête : "Garde-robe" en vue rangées, nom de la catégorie en vue "Tout voir" */}
             {!categoryView ? (
@@ -3721,6 +3722,10 @@ export default function App() {
           const roundBtn = { width: 40, height: 40, borderRadius: 20, background: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
           const chipStyle = (active) => ({ background: active ? COLORS.ink : "transparent", color: active ? "white" : COLORS.ink, border: `1px solid ${active ? COLORS.ink : COLORS.line}` });
           return (
+          // La fiche s'ouvre PAR-DESSUS la liste (qui reste en place dessous) : elle démarre toujours en haut,
+          // et en la fermant on retrouve la liste exactement là où on l'avait laissée.
+          <div className="fixed inset-0 overflow-y-auto" style={{ zIndex: 35, background: COLORS.ivory, overscrollBehavior: "contain", WebkitOverflowScrolling: "touch" }}>
+            <div className="max-w-3xl mx-auto px-5 pt-10" style={{ paddingBottom: 120 }}>
           <div key={detailItemId} className="slide-right">
             {/* ── Panneau photo, gris clair, arrondi en bas ── */}
             <div className="-mx-5 -mt-10 px-5 pb-5 mb-4" style={{ background: COLORS.haze, borderRadius: "0 0 32px 32px", paddingTop: 44 }}>
@@ -4009,13 +4014,15 @@ export default function App() {
               </div>
             )}
           </div>
+            </div>
+          </div>
           );
         })()}
 
         {/* ══════════════════ VUE TENUES ══════════════════ */}
         {view === "tenues" && (
           <div key={view} className={slideDir === "right" ? "slide-right" : "slide-left"}>
-            {!detailOutfitId && (
+            {(
             <div className="flex items-end justify-between mb-6">
               <div>
                 <h1 className="display text-3xl" style={{ fontWeight: 700 }}>Tenues</h1>
@@ -4028,7 +4035,7 @@ export default function App() {
 
 
 
-            {!detailOutfitId && (
+            {(
             <>
             {outfits.length === 0 ? (
               <p className="text-sm py-10 text-center" style={{ color: COLORS.muted }}>Aucune tenue</p>
@@ -4124,6 +4131,8 @@ export default function App() {
               const roundBtn = { width: 40, height: 40, borderRadius: 20, background: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
               const chipStyle = (active) => ({ background: active ? COLORS.ink : "transparent", color: active ? "white" : COLORS.ink, border: `1px solid ${active ? COLORS.ink : COLORS.line}` });
               return (
+                <div className="fixed inset-0 overflow-y-auto" style={{ zIndex: 35, background: COLORS.ivory, overscrollBehavior: "contain", WebkitOverflowScrolling: "touch" }}>
+                <div className="max-w-3xl mx-auto px-5 pt-10" style={{ paddingBottom: 120 }}>
                 <div className="slide-right">
                   {/* ── Panneau : la tenue en flat lay ── */}
                   <div className="-mx-5 -mt-10 px-5 pb-5 mb-4" style={{ background: COLORS.haze, borderRadius: "0 0 32px 32px", paddingTop: 44 }}>
@@ -4312,6 +4321,8 @@ export default function App() {
                       </p>
                     </div>
                   )}
+                </div>
+                </div>
                 </div>
               );
             })()}
