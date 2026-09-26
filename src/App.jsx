@@ -123,6 +123,48 @@ function compareByColor(a, b) {
   return A[0] !== B[0] ? A[0] - B[0] : A[1] - B[1];
 }
 
+// ── Détection des doublons ──
+// "Empreinte" d'une photo : on la réduit à 8×8 pixels en gris, et on note pour chaque pixel
+// s'il est plus clair ou plus foncé que la moyenne. Deux photos presque identiques
+// ont presque la même empreinte (quelques "bits" de différence seulement).
+async function imageFingerprint(src) {
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.crossOrigin = "anonymous";
+    i.onload = () => resolve(i);
+    i.onerror = reject;
+    i.src = src.startsWith("http") ? `${src}${src.includes("?") ? "&" : "?"}fp=1` : src;
+  });
+  const c = document.createElement("canvas");
+  c.width = 8; c.height = 8;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.fillStyle = "#FFFFFF"; // fond blanc derrière les photos détourées
+  ctx.fillRect(0, 0, 8, 8);
+  ctx.drawImage(img, 0, 0, 8, 8);
+  const d = ctx.getImageData(0, 0, 8, 8).data;
+  const g = [];
+  for (let p = 0; p < d.length; p += 4) g.push(0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2]);
+  const avg = g.reduce((a, b) => a + b, 0) / g.length;
+  return g.map((v) => (v > avg ? "1" : "0")).join("");
+}
+function fingerprintDistance(a, b) {
+  if (!a || !b || a.length !== b.length) return 99;
+  let n = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) n++;
+  return n;
+}
+// Nom simplifié pour comparer : minuscules, sans accents ni ponctuation.
+function normalizeName(str) {
+  return (str || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+}
+// Distance entre deux couleurs (0 = identiques).
+function hexDistance(a, b) {
+  if (!a || !b || a.length < 7 || b.length < 7) return 999;
+  const c = (h) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16));
+  const [x, y] = [c(a), c(b)];
+  return Math.sqrt((x[0] - y[0]) ** 2 + (x[1] - y[1]) ** 2 + (x[2] - y[2]) ** 2);
+}
+
 // ── Photos détourées (fond transparent) ──
 // Vrai si l'image dessinée sur ce canvas a des zones transparentes (vêtement détouré).
 function canvasHasTransparency(canvas) {
@@ -482,6 +524,13 @@ export default function App() {
   // Menu du bouton "+" central de la barre (éventail).
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  // Doublons détectés au moment d'ajouter un vêtement / d'enregistrer une tenue.
+  const [itemDup, setItemDup] = useState(null);
+  const [outfitDup, setOutfitDup] = useState(null);
+  // Fiche tenue : sélecteur pour ajouter / retirer des pièces.
+  const [outfitPiecePicker, setOutfitPiecePicker] = useState(false);
+  useEffect(() => { setItemDup(null); }, [form.name, form.photo, form.category, form.hex]);
+  useEffect(() => { setOutfitDup(null); }, [selectedIds]);
   // Id de l'entrée d'agenda dont la photo portée est en cours d'envoi ("new" pour une nouvelle).
   const [uploadingWornFor, setUploadingWornFor] = useState(null);
   // Mois ouverts dans l'Agenda (null = par défaut, seul le mois en cours est ouvert).
@@ -520,7 +569,7 @@ export default function App() {
   const [outfitMenuOpen, setOutfitMenuOpen] = useState(false);
   // Quelle tenue est actuellement affichée en fiche détaillée (null = aucune).
   const [detailOutfitId, setDetailOutfitId] = useState(null);
-  useEffect(() => { setOutfitTab("apropos"); setOutfitMenuOpen(false); }, [detailOutfitId]);
+  useEffect(() => { setOutfitTab("apropos"); setOutfitMenuOpen(false); setOutfitPiecePicker(false); }, [detailOutfitId]);
   // Popup de sélection des vêtements "qui vont bien avec" celui affiché en fiche.
   const [showPairsModal, setShowPairsModal] = useState(false);
 
@@ -843,6 +892,43 @@ export default function App() {
     })();
   }, [loaded, items]);
 
+  // Calcule en arrière-plan, une fois, l'empreinte des photos déjà enregistrées (pour repérer les doublons).
+  const fingerprintsStarted = useRef(false);
+  useEffect(() => {
+    if (!loaded || fingerprintsStarted.current) return;
+    const todo = items.filter((i) => i.photo && !i.photoHash);
+    if (todo.length === 0) return;
+    fingerprintsStarted.current = true;
+    (async () => {
+      for (const item of todo) {
+        try {
+          const h = await imageFingerprint(thumbOf(item));
+          setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, photoHash: h } : i)));
+        } catch (err) {}
+      }
+    })();
+  }, [loaded, items]);
+
+  // Vêtements qui ressemblent beaucoup à celui qu'on s'apprête à ajouter :
+  // photo presque identique, ou même nom, ou même catégorie + couleur très proche + un mot en commun.
+  function findSimilarItems(cand) {
+    const generic = new Set(["pull", "haut", "robe", "jupe", "veste", "chemise", "pantalon", "jean", "tshirt", "t", "shirt", "top", "manches", "longues", "courtes", "avec", "sans"]);
+    const words = normalizeName(cand.name).split(" ").filter((w) => w.length >= 3 && !generic.has(w));
+    const candCat = effectiveCategory(cand);
+    return items
+      .map((i) => {
+        let score = 0;
+        if (cand.photoHash && i.photoHash && fingerprintDistance(cand.photoHash, i.photoHash) <= 6) score = 3;
+        else if (normalizeName(cand.name) && normalizeName(cand.name) === normalizeName(i.name)) score = 2;
+        else if (effectiveCategory(i) === candCat && hexDistance(cand.hex, i.hex) < 40 && words.some((w) => normalizeName(i.name).split(" ").includes(w))) score = 1;
+        return { item: i, score };
+      })
+      .filter((m) => m.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 2)
+      .map((m) => m.item);
+  }
+
   // ── ACTIONS SUR LES VÊTEMENTS ──────────────
   // Au lieu d'enregistrer directement la photo choisie, on ouvre d'abord
   // la popup de recadrage — la vraie photo n'est enregistrée qu'après validation.
@@ -960,6 +1046,8 @@ export default function App() {
         detectedHex = pal[0];
         detectedExtras = pal.slice(1);
       } catch (err) {}
+      let photoHash = null;
+      try { photoHash = await imageFingerprint(croppedDataUrl); } catch {}
       const photoUrl = await uploadPhotoToStorage(croppedDataUrl, "photo");
       const thumbUrl = await uploadPhotoToStorage(await makeThumbnail(croppedDataUrl), "thumb");
       const originalUrl = await uploadPhotoToStorage(rawImageSrc, "original");
@@ -968,7 +1056,7 @@ export default function App() {
         // On garde aussi "photoOriginal" (la source utilisée pour ce recadrage), pour pouvoir
         // rouvrir le recadreur plus tard sur l'intégralité de l'image plutôt que sur un carré déjà coupé.
         const oldItem = items.find((i) => i.id === cropTargetItemId);
-        setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: photoUrl, photoThumb: thumbUrl, photoOriginal: originalUrl, ...(detectedHex && { hex: detectedHex, extraHexes: detectedExtras }) } : i)));
+        setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: photoUrl, photoThumb: thumbUrl, photoOriginal: originalUrl, photoHash, ...(detectedHex && { hex: detectedHex, extraHexes: detectedExtras }) } : i)));
         // On retire les anciennes versions du stockage, maintenant qu'elles ne sont plus utilisées.
         if (oldItem) {
           deleteFromStorage(oldItem.photo);
@@ -976,7 +1064,7 @@ export default function App() {
           deleteFromStorage(oldItem.photoOriginal);
         }
       } else {
-        setForm((prev) => ({ ...prev, photo: photoUrl, photoThumb: thumbUrl, photoOriginal: originalUrl, ...(detectedHex && { hex: detectedHex, extraHexes: detectedExtras }) }));
+        setForm((prev) => ({ ...prev, photo: photoUrl, photoThumb: thumbUrl, photoOriginal: originalUrl, photoHash, ...(detectedHex && { hex: detectedHex, extraHexes: detectedExtras }) }));
       }
     } catch (err) {
       alert("L'envoi de cette photo a échoué (vérifie ta connexion internet, ou réessaie dans un instant).");
@@ -1005,13 +1093,20 @@ export default function App() {
     }));
   }
 
-  function addItem(e) {
-    e.preventDefault();
-    if (!form.name.trim()) return;
+  // Renvoie true si le vêtement a bien été ajouté (false si on attend une confirmation "doublon").
+  function addItem(e, force = false) {
+    if (e) e.preventDefault();
+    if (!form.name.trim()) return false;
+    if (!force) {
+      const similar = findSimilarItems(form);
+      if (similar.length) { setItemDup(similar); return false; }
+    }
+    setItemDup(null);
     const newItem = { id: Date.now(), ...form, pairsWith: [], wornDates: [] };
     setItems((prev) => [...prev, newItem]);
     setForm({ name: "", category: form.category, hex: "#C4808C", extraHexes: [], photo: null, weather: [], occasions: [], handmade: false });
     showToast({ text: `« ${newItem.name} » ajouté ✓`, action: "Voir", onAction: () => { changeView("dressing"); setDetailItemId(newItem.id); } });
+    return true;
   }
 
   function removeItem(id) {
@@ -1262,6 +1357,28 @@ export default function App() {
 
   // Logique d'enregistrement d'une tenue, réutilisable depuis le formulaire
   // classique ET depuis la popup du générateur.
+  // Tenue existante identique (mêmes pièces) ou très proche (une seule pièce de différence).
+  function findSimilarOutfit(itemIds, excludeId) {
+    const ids = [...new Set(itemIds)];
+    let close = null;
+    for (const o of outfits) {
+      if (o.id === excludeId) continue;
+      const oi = [...new Set(o.itemIds || [])];
+      const common = ids.filter((id) => oi.includes(id)).length;
+      if (common === ids.length && common === oi.length) return { outfit: o, exact: true, diff: [] };
+      if (!close && Math.min(ids.length, oi.length) >= 3 && common >= Math.max(ids.length, oi.length) - 1) {
+        const diff = [...ids.filter((id) => !oi.includes(id)), ...oi.filter((id) => !ids.includes(id))];
+        close = { outfit: o, exact: false, diff };
+      }
+    }
+    return close;
+  }
+  // "une pièce change : Baskets blanches ↔ Bottines"
+  function describeOutfitDiff(m) {
+    const names = m.diff.map((id) => items.find((i) => i.id === id)).filter(Boolean).map((i) => i.name);
+    return names.length ? `seule différence : ${names.join(" / ")}` : "";
+  }
+
   function commitOutfit() {
     if (!outfitName.trim() || selectedIds.length === 0) return;
     const newOutfit = { id: Date.now(), name: outfitName, itemIds: selectedIds, favorite: false, wornDates: [], ...outfitTags };
@@ -1315,9 +1432,19 @@ export default function App() {
     );
   }
 
-  function saveOutfit(e) {
-    e.preventDefault();
+  function saveOutfit(e, force = false) {
+    if (e) e.preventDefault();
+    const m = findSimilarOutfit(selectedIds);
+    if (m && m.exact) {
+      // Mêmes pièces qu'une tenue existante : pas de doublon, on la montre.
+      setShowOutfitForm(false);
+      setOutfitDup(null);
+      showToast({ text: `Elle existe déjà : « ${m.outfit.name} »`, action: "Voir", onAction: () => { changeView("tenues"); setDetailOutfitId(m.outfit.id); } });
+      return;
+    }
+    if (m && !force) { setOutfitDup(m); return; }
     commitOutfit();
+    setOutfitDup(null);
     setShowOutfitForm(false);
     showToast({ text: "Tenue enregistrée ✓", action: "Voir", onAction: () => changeView("tenues") });
   }
@@ -1706,6 +1833,9 @@ export default function App() {
     const found = picks.filter(Boolean);
     setSelectedIds(found.map((i) => i.id));
     setOutfitName(found.length >= 2 ? nextOutfitName() : "");
+    // Tombé pile sur une tenue déjà enregistrée ? On le signale (badge "Une de tes tenues").
+    const same = findSimilarOutfit(found.map((i) => i.id));
+    if (same && same.exact) { setWizardFromOutfitId(same.outfit.id); setOutfitName(same.outfit.name); }
     // On pré-coche les tags de la tenue avec les critères utilisés pour la générer.
     setOutfitTags({ weather: currentWeather ? [currentWeather] : [], occasions: genOccasion ? [genOccasion] : [] });
   }
@@ -1736,7 +1866,15 @@ export default function App() {
       changeView("tenues");
       setDetailOutfitId(wizardFromOutfitId);
     } else {
-      commitOutfit();
+      const m = findSimilarOutfit(selectedIds);
+      if (m && m.exact) {
+        changeView("tenues");
+        setDetailOutfitId(m.outfit.id);
+      } else {
+        if (m && !window.confirm(`Presque comme « ${m.outfit.name} » (${describeOutfitDiff(m)}).\n\nL'enregistrer quand même ?`)) return;
+        commitOutfit();
+        showToast({ text: "Tenue enregistrée ✓", action: "Voir", onAction: () => changeView("tenues") });
+      }
     }
     setShowWizard(false);
     setWizardShowResult(false);
@@ -2186,6 +2324,16 @@ export default function App() {
   // (pour que "Portée aujourd'hui" reste synchronisé, comme pour une tenue créée normalement).
   function saveAsReusableOutfit(itemIds, label, dateStr, entryId) {
     if (itemIds.length === 0) return;
+    const m = findSimilarOutfit(itemIds);
+    if (m && m.exact) {
+      // Déjà dans la collection : on relie simplement l'entrée d'agenda à cette tenue.
+      if (dateStr && entryId) {
+        setAgenda((prev) => ({ ...prev, [dateStr]: normalizeDayEntries(prev[dateStr]).map((e) => (e.id === entryId ? { ...e, outfitId: m.outfit.id } : e)) }));
+      }
+      showToast({ text: `Déjà dans tes tenues : « ${m.outfit.name} »` });
+      return;
+    }
+    if (m && !window.confirm(`Presque comme « ${m.outfit.name} » (${describeOutfitDiff(m)}).\n\nL'ajouter quand même ?`)) return;
     const newOutfitId = Date.now() + 1;
     const newOutfit = { id: newOutfitId, name: label.trim() || nextOutfitName(), itemIds, favorite: false, wornDates: [], weather: [], occasions: [] };
     setOutfits((prev) => [...prev, newOutfit]);
@@ -3891,23 +4039,64 @@ export default function App() {
                   {outfitTab === "pieces" && (
                     <div className="flex flex-col">
                       {pieces.map((item, idx) => (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => { changeView("dressing"); setDetailItemId(item.id); }}
-                          className="flex items-center gap-3 py-2.5 text-left"
-                          style={{ borderBottom: idx < pieces.length - 1 ? `1px solid ${COLORS.line}` : "none" }}
-                        >
-                          <span className="overflow-hidden flex-shrink-0" style={{ width: 56, height: 56, borderRadius: 14, background: item.photo ? COLORS.haze : item.hex }}>
-                            {item.photo && <img loading="lazy" decoding="async" src={thumbOf(item)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
-                          </span>
-                          <span className="flex-1 min-w-0">
-                            <span className="block text-sm truncate" style={{ fontWeight: 600 }}>{item.name}</span>
-                            <span className="block text-xs" style={{ color: COLORS.muted }}>{catLabel(item.category)}</span>
-                          </span>
-                          <ArrowLeft size={16} color={COLORS.muted} style={{ transform: "rotate(180deg)" }} />
-                        </button>
+                        <div key={item.id} className="flex items-center gap-2 py-2.5" style={{ borderBottom: idx < pieces.length - 1 ? `1px solid ${COLORS.line}` : "none" }}>
+                          <button
+                            type="button"
+                            onClick={() => { changeView("dressing"); setDetailItemId(item.id); }}
+                            className="flex-1 min-w-0 flex items-center gap-3 text-left"
+                          >
+                            <span className="overflow-hidden flex-shrink-0" style={{ width: 56, height: 56, borderRadius: 14, background: item.photo ? COLORS.haze : item.hex }}>
+                              {item.photo && <img loading="lazy" decoding="async" src={thumbOf(item)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                            </span>
+                            <span className="flex-1 min-w-0">
+                              <span className="block text-sm truncate" style={{ fontWeight: 600 }}>{item.name}</span>
+                              <span className="block text-xs" style={{ color: COLORS.muted }}>{catLabel(item.category)}</span>
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (pieces.length <= 1) { askConfirm("C'est la dernière pièce : supprimer la tenue ?", () => { removeOutfit(outfit.id); setDetailOutfitId(null); }); return; }
+                              updateOutfit((o) => ({ itemIds: o.itemIds.filter((id) => id !== item.id) }));
+                            }}
+                            aria-label={`Retirer ${item.name} de la tenue`}
+                            className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+                            style={{ background: COLORS.haze }}
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
                       ))}
+                      <button
+                        type="button"
+                        onClick={() => setOutfitPiecePicker(true)}
+                        className="mt-3 h-11 rounded-full text-sm flex items-center justify-center gap-1.5"
+                        style={{ border: `1.5px dashed ${COLORS.line}`, fontWeight: 600 }}
+                      >
+                        <Plus size={15} /> Ajouter une pièce
+                      </button>
+
+                      {/* Sélecteur : toucher une pièce l'ajoute (ou la retire) de la tenue */}
+                      {outfitPiecePicker && (
+                        <div onClick={() => setOutfitPiecePicker(false)} className="fixed inset-0 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}>
+                          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
+                            <div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                            <div className="flex items-center justify-between mb-4">
+                              <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Pièces de la tenue</p>
+                              <button onClick={() => setOutfitPiecePicker(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                                <X size={14} />
+                              </button>
+                            </div>
+                            {renderItemRows({
+                              isSelected: (i) => (outfit.itemIds || []).includes(i.id),
+                              onPick: (i) => updateOutfit((o) => ({ itemIds: o.itemIds.includes(i.id) ? (o.itemIds.length > 1 ? o.itemIds.filter((id) => id !== i.id) : o.itemIds) : [...o.itemIds, i.id] })),
+                            })}
+                            <button type="button" onClick={() => setOutfitPiecePicker(false)} className="w-full h-12 rounded-full text-sm font-bold text-white mt-4" style={{ background: COLORS.rose }}>
+                              C'est bon
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -4232,7 +4421,7 @@ export default function App() {
                       <X size={14} />
                     </button>
                   </div>
-                  <form onSubmit={(e) => { addItem(e); setShowAddForm(false); }} className="flex flex-wrap gap-3 items-end">
+                  <form onSubmit={(e) => { if (addItem(e)) setShowAddForm(false); }} className="flex flex-wrap gap-3 items-end">
                     <div className="flex-1 min-w-[140px]">
                       <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Nom du vêtement" className="w-full px-4 py-2.5 rounded-xl text-sm" style={{ border: `1px solid ${COLORS.line}`, outline: "none" }} />
                     </div>
@@ -4277,6 +4466,23 @@ export default function App() {
                         ))}
                       </div>
                     </div>
+                    {itemDup && (
+                      <div className="w-full p-3 rounded-2xl" style={{ background: "#FDE8E5" }}>
+                        <p className="text-sm mb-2" style={{ fontWeight: 700 }}>Tu l'as peut-être déjà ?</p>
+                        {itemDup.map((d) => (
+                          <div key={d.id} className="flex items-center gap-2.5 mb-2">
+                            <span className="overflow-hidden flex-shrink-0" style={{ width: 44, height: 44, borderRadius: 12, background: d.photo ? "#FFFFFF" : d.hex }}>
+                              {d.photo && <img src={thumbOf(d)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                            </span>
+                            <span className="flex-1 text-sm truncate">{d.name}</span>
+                            <button type="button" onClick={() => { setShowAddForm(false); setItemDup(null); changeView("dressing"); setDetailItemId(d.id); }} className="text-sm" style={{ color: COLORS.rose, fontWeight: 700 }}>Voir</button>
+                          </div>
+                        ))}
+                        <button type="button" onClick={() => { if (addItem(null, true)) setShowAddForm(false); }} className="w-full h-10 rounded-full text-sm mt-1" style={{ background: "#FFFFFF", fontWeight: 600 }}>
+                          Non, c'est une autre pièce : ajouter
+                        </button>
+                      </div>
+                    )}
                     <div className="w-full flex items-center justify-between py-1">
                       <span className="flex items-center gap-2 text-sm" style={{ fontWeight: 600 }}>
                         <Scissors size={15} color={COLORS.rose} /> Fait main
@@ -4414,6 +4620,16 @@ export default function App() {
 
                         {renderOutfitTagPicker()}
 
+                        {outfitDup && (
+                          <div className="p-3 rounded-2xl mb-3" style={{ background: "#FDE8E5" }}>
+                            <p className="text-sm" style={{ fontWeight: 700 }}>Presque comme « {outfitDup.outfit.name} »</p>
+                            <p className="text-xs mb-3" style={{ color: "#555555" }}>{describeOutfitDiff(outfitDup)}</p>
+                            <div className="flex gap-2">
+                              <button type="button" onClick={() => { setShowOutfitForm(false); setOutfitDup(null); changeView("tenues"); setDetailOutfitId(outfitDup.outfit.id); }} className="flex-1 h-10 rounded-full text-sm" style={{ background: "#FFFFFF", fontWeight: 600 }}>Voir</button>
+                              <button type="button" onClick={() => saveOutfit(null, true)} className="flex-1 h-10 rounded-full text-sm" style={{ background: COLORS.ink, color: "#FFFFFF", fontWeight: 600 }}>Enregistrer quand même</button>
+                            </div>
+                          </div>
+                        )}
                         <button type="submit" disabled={!outfitName.trim() || selectedIds.length === 0} className="w-full flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold text-white" style={{ background: COLORS.rose, opacity: !outfitName.trim() || selectedIds.length === 0 ? 0.4 : 1 }}>
                           <Plus size={16} /> Enregistrer la tenue
                         </button>
