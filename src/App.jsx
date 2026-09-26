@@ -453,6 +453,49 @@ export default function App() {
     setCarnetViewId(null);
   }
 
+  // ── Fermer une popup en la faisant glisser vers le bas depuis sa petite barre du haut ──
+  // Marche pour toutes les popups qui ont la petite barre grise (data-sheet-handle).
+  useEffect(() => {
+    let drag = null;
+    const onStart = (e) => {
+      const h = e.target.closest && e.target.closest("[data-sheet-handle]");
+      if (!h) return;
+      const sheet = h.parentElement;
+      drag = { y: e.touches[0].clientY, dy: 0, sheet };
+      sheet.style.transition = "none";
+    };
+    const onMove = (e) => {
+      if (!drag) return;
+      drag.dy = Math.max(0, e.touches[0].clientY - drag.y);
+      drag.sheet.style.transform = `translateY(${drag.dy}px)`;
+      e.preventDefault(); // pas de défilement de la page pendant qu'on tire la popup
+    };
+    const onEnd = () => {
+      if (!drag) return;
+      const { sheet, dy } = drag;
+      drag = null;
+      sheet.style.transition = "transform 0.2s ease-out";
+      if (dy > 90) {
+        sheet.style.transform = "translateY(100%)";
+        setTimeout(() => {
+          sheet.style.transition = "";
+          sheet.style.transform = "";
+          sheet.parentElement && sheet.parentElement.click(); // comme un toucher à côté : ferme la popup
+        }, 180);
+      } else {
+        sheet.style.transform = "";
+      }
+    };
+    document.addEventListener("touchstart", onStart, { passive: true });
+    document.addEventListener("touchmove", onMove, { passive: false });
+    document.addEventListener("touchend", onEnd);
+    return () => {
+      document.removeEventListener("touchstart", onStart);
+      document.removeEventListener("touchmove", onMove);
+      document.removeEventListener("touchend", onEnd);
+    };
+  }, []);
+
   // Détection du glissement au doigt (swipe) : on note où le doigt touche l'écran,
   // et où il le quitte, pour calculer la distance et la direction du geste.
   const touchStartX = useRef(null);
@@ -3483,17 +3526,17 @@ export default function App() {
                     }}
                     className="w-full max-w-md px-5 pt-3 pb-8"
                     style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}
-                  ><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                  ><div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                     <div className="flex items-center justify-between gap-2 mb-4">
-                      <button onClick={() => go(prevE)} disabled={!prevE} aria-label="Tenue précédente" className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze, opacity: prevE ? 1 : 0.3 }}>
-                        <ArrowLeft size={15} />
+                      <button onClick={() => go(prevE)} disabled={!prevE} aria-label="Tenue précédente" className="w-8 h-9 flex items-center justify-center flex-shrink-0" style={{ opacity: prevE ? 0.8 : 0.2 }}>
+                        <ChevronDown size={20} style={{ transform: "rotate(90deg)" }} />
                       </button>
                       <div className="flex-1 min-w-0 text-center">
                         <p className="display truncate" style={{ fontWeight: 700, fontSize: 18 }}>{entry.label}</p>
                         <p className="text-xs" style={{ color: COLORS.muted }}>{entry.dateStr === todayKey() ? "Aujourd'hui" : entry.dateStr === tomorrowKey() ? "Demain" : formatAgendaDate(entry.dateStr)}</p>
                       </div>
-                      <button onClick={() => go(nextE)} disabled={!nextE} aria-label="Tenue suivante" className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze, opacity: nextE ? 1 : 0.3 }}>
-                        <ArrowLeft size={15} style={{ transform: "rotate(180deg)" }} />
+                      <button onClick={() => go(nextE)} disabled={!nextE} aria-label="Tenue suivante" className="w-8 h-9 flex items-center justify-center flex-shrink-0" style={{ opacity: nextE ? 0.8 : 0.2 }}>
+                        <ChevronDown size={20} style={{ transform: "rotate(-90deg)" }} />
                       </button>
                       <button onClick={() => setOpenEntryId(null)} aria-label="Fermer" className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze }}>
                         <X size={14} />
@@ -4108,17 +4151,20 @@ export default function App() {
                     className="w-full max-w-md px-5 pt-3 pb-8"
                     style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}
                   >
-                    <div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                    <div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                     <div className="flex items-center justify-between gap-2 mb-4">
-                      <button onClick={() => newer && setCarnetViewId(newer.entryId)} disabled={!newer} aria-label="Photo plus récente" className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze, opacity: newer ? 1 : 0.3 }}>
-                        <ArrowLeft size={15} />
+                      <button onClick={() => newer && setCarnetViewId(newer.entryId)} disabled={!newer} aria-label="Photo plus récente" className="w-8 h-9 flex items-center justify-center flex-shrink-0" style={{ opacity: newer ? 0.8 : 0.2 }}>
+                        <ChevronDown size={20} style={{ transform: "rotate(90deg)" }} />
                       </button>
                       <div className="flex-1 min-w-0 text-center">
                         <p className="text-sm font-medium">{shot.dateStr === todayKey() ? "Aujourd'hui" : formatAgendaDate(shot.dateStr)}</p>
                         <p className="text-xs" style={{ color: COLORS.muted }}>{idx + 1} / {shots.length}</p>
                       </div>
-                      <button onClick={() => older && setCarnetViewId(older.entryId)} disabled={!older} aria-label="Photo plus ancienne" className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze, opacity: older ? 1 : 0.3 }}>
-                        <ArrowLeft size={15} style={{ transform: "rotate(180deg)" }} />
+                      <button onClick={() => older && setCarnetViewId(older.entryId)} disabled={!older} aria-label="Photo plus ancienne" className="w-8 h-9 flex items-center justify-center flex-shrink-0" style={{ opacity: older ? 0.8 : 0.2 }}>
+                        <ChevronDown size={20} style={{ transform: "rotate(-90deg)" }} />
+                      </button>
+                      <button onClick={() => setCarnetViewId(null)} aria-label="Fermer" className="w-8 h-8 ml-1.5 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze }}>
+                        <X size={14} />
                       </button>
                     </div>
                     <img src={shot.wornPhoto} alt={`Tenue portée — ${shot.label}`} style={{ width: "100%", maxHeight: "62vh", objectFit: "contain", borderRadius: 20, display: "block", background: COLORS.haze, opacity: uploadingWornFor === shot.entryId ? 0.5 : 1 }} />
@@ -4174,16 +4220,19 @@ export default function App() {
                     }}
                     className="w-full max-w-md px-5 pt-3 pb-8"
                     style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}
-                  ><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                  ><div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                     <div className="flex items-center justify-between mb-4">
-                      <button onClick={() => prevPlannedDate(dayViewDate) && setDayViewDate(prevPlannedDate(dayViewDate))} disabled={!prevPlannedDate(dayViewDate)} aria-label="Tenue précédente" className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: COLORS.haze, opacity: prevPlannedDate(dayViewDate) ? 1 : 0.3 }}>
-                        <ArrowLeft size={15} />
+                      <button onClick={() => prevPlannedDate(dayViewDate) && setDayViewDate(prevPlannedDate(dayViewDate))} disabled={!prevPlannedDate(dayViewDate)} aria-label="Tenue précédente" className="w-8 h-9 flex items-center justify-center" style={{ opacity: prevPlannedDate(dayViewDate) ? 0.8 : 0.2 }}>
+                        <ChevronDown size={20} style={{ transform: "rotate(90deg)" }} />
                       </button>
                       <p className="text-sm font-medium text-center" style={{ flex: 1 }}>
                         {dayViewDate === todayKey() ? "Aujourd'hui" : formatAgendaDate(dayViewDate)}
                       </p>
-                      <button onClick={() => nextPlannedDate(dayViewDate) && setDayViewDate(nextPlannedDate(dayViewDate))} disabled={!nextPlannedDate(dayViewDate)} aria-label="Tenue suivante" className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: COLORS.haze, opacity: nextPlannedDate(dayViewDate) ? 1 : 0.3 }}>
-                        <ArrowLeft size={15} style={{ transform: "rotate(180deg)" }} />
+                      <button onClick={() => nextPlannedDate(dayViewDate) && setDayViewDate(nextPlannedDate(dayViewDate))} disabled={!nextPlannedDate(dayViewDate)} aria-label="Tenue suivante" className="w-8 h-9 flex items-center justify-center" style={{ opacity: nextPlannedDate(dayViewDate) ? 0.8 : 0.2 }}>
+                        <ChevronDown size={20} style={{ transform: "rotate(-90deg)" }} />
+                      </button>
+                      <button onClick={() => setDayViewDate(null)} aria-label="Fermer" className="w-8 h-8 ml-1.5 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze }}>
+                        <X size={14} />
                       </button>
                     </div>
 
@@ -4266,7 +4315,7 @@ export default function App() {
                 className="fixed inset-0 flex items-end justify-center"
                 style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
               >
-                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                   <div className="flex items-center justify-between mb-4">
                     <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Ajouter un vêtement</p>
                     <button onClick={() => setShowAddForm(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
@@ -4370,7 +4419,7 @@ export default function App() {
               >
                 {/* Panneau qui monte du bas de l'écran */}
                 <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-2" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
-                  <div className="flex justify-center mb-2">
+                  <div data-sheet-handle className="flex justify-center -mt-2 pt-2 pb-2" style={{ touchAction: "none", cursor: "grab" }}>
                     <span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} />
                   </div>
                   <div className="flex items-center justify-between mb-3">
@@ -4506,7 +4555,7 @@ export default function App() {
             {showSettings && (
               <div onClick={() => setShowSettings(false)} className="fixed inset-0 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.4)", zIndex: 52 }}>
                 <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
-                  <div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                  <div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                   <div className="flex items-center justify-between mb-2">
                     <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Paramètres</p>
                     <button onClick={() => setShowSettings(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
@@ -4593,7 +4642,7 @@ export default function App() {
             {showRules && (
               <div onClick={() => setShowRules(false)} className="fixed inset-0 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.4)", zIndex: 54 }}>
                 <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
-                  <div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                  <div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                   <div className="flex items-center justify-between mb-1">
                     <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Règles du générateur</p>
                     <button onClick={() => setShowRules(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
@@ -4914,7 +4963,7 @@ export default function App() {
                 className="fixed inset-0 flex items-end justify-center"
                 style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
               >
-                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                   <div className="flex items-center justify-between mb-4">
                     <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Va bien avec</p>
                     <button onClick={() => setShowPairsModal(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
@@ -5103,7 +5152,7 @@ export default function App() {
                       {outfitPiecePicker && (
                         <div onClick={() => setOutfitPiecePicker(false)} className="fixed inset-0 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}>
                           <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
-                            <div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                            <div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                             <div className="flex items-center justify-between mb-4">
                               <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Pièces de la tenue</p>
                               <button onClick={() => setOutfitPiecePicker(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
@@ -5154,7 +5203,7 @@ export default function App() {
               return (
                 <div onClick={() => setEntryPicker(null)} className="fixed inset-0 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.4)", zIndex: 55 }}>
                   <div onClick={(ev) => ev.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
-                    <div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                    <div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                     <div className="flex items-center justify-between mb-1">
                       <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>{e.label}</p>
                       <button onClick={() => setEntryPicker(null)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
@@ -5184,7 +5233,7 @@ export default function App() {
                 style={{ background: "rgba(0,0,0,0.4)", zIndex: 55 }}
               >
                 <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
-                  <div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                  <div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                   <div className="flex items-center justify-between mb-3">
                     <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Synchro</p>
                     <button onClick={() => setShowSyncSheet(false)} disabled={syncSetup.busy} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
@@ -5345,7 +5394,7 @@ export default function App() {
                   className="fixed inset-0 flex items-end justify-center"
                   style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
                 >
-                  <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                  <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                     <div className="flex items-center justify-between mb-1">
                       <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Suggère-moi une tenue</p>
                       <button onClick={() => setShowWizard(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
@@ -5751,7 +5800,7 @@ export default function App() {
                 className="fixed inset-0 flex items-end justify-center"
                 style={{ background: "rgba(0,0,0,0.6)", zIndex: 60 }}
               >
-                <div className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                <div className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0" }}><div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                   <div className="flex items-center justify-between mb-4">
                     <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Recadrer la photo</p>
                     <button onClick={() => { setShowCropModal(false); setRawImageSrc(null); }} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
@@ -5806,7 +5855,7 @@ export default function App() {
                 className="fixed inset-0 flex items-end justify-center"
                 style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
               >
-                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}><div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                   <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2">
                       {quickPlanMode !== "choice" && (
