@@ -4716,9 +4716,26 @@ export default function App() {
                     <Camera size={18} />
                     <input type="file" accept="image/*" onChange={(e) => handlePhotoChange(e, it.id)} className="hidden" />
                   </label>
-              <div className="flex-1 min-w-0">
-                {renderWearState({ done: wornToday, onDo: () => wearItemToday(it), onUndo: () => wearItemToday(it), fem: false })}
-              </div>
+                  {/* Porté aujourd'hui : un simple bouton rond. Blanc = pas encore porté ; corail = porté. Toucher à nouveau annule. */}
+                  <button
+                    type="button"
+                    aria-label={wornToday ? "Porté aujourd'hui (toucher pour annuler)" : "Je le porte aujourd'hui"}
+                    aria-pressed={wornToday}
+                    title={wornToday ? "Porté aujourd'hui" : "Je le porte aujourd'hui"}
+                    onClick={() => wearItemToday(it)}
+                    style={{
+                      ...roundBtn,
+                      width: 50,
+                      height: 50,
+                      borderRadius: 25,
+                      marginLeft: "auto",
+                      background: wornToday ? COLORS.rose : "#FFFFFF",
+                      boxShadow: wornToday ? "0 6px 16px rgba(255,75,51,0.3)" : "none",
+                      transition: "background 0.2s, box-shadow 0.2s",
+                    }}
+                  >
+                    {wornToday ? <Check size={20} color="#FFFFFF" strokeWidth={3} /> : <Shirt size={18} />}
+                  </button>
               </div>
             </div>
 
