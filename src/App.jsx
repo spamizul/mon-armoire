@@ -264,6 +264,46 @@ async function detectDominantColor(src) {
 
 const EMPTY_OUTFIT_TAGS = { weather: [], occasions: [] };
 
+// Vêtement à motifs ? Réglé à la main sur la fiche ; sinon deviné : plusieurs couleurs bien distinctes
+// détectées sur la photo = motif (rayures, fleurs, carreaux…).
+function isPatterned(item) {
+  if (!item) return false;
+  if (typeof item.pattern === "boolean") return item.pattern; // réglé à la main
+  if (typeof item.patternScore === "number") return item.patternScore > 0.15; // texture de la photo
+  return (item.extraHexes || []).length > 0; // à défaut : plusieurs couleurs
+}
+
+// "Texture" d'une photo : on regarde le centre (là où est le vêtement) et on compte les endroits
+// où la clarté change brusquement d'un pixel à l'autre. Un tissu uni (même froissé) en a très peu
+// (~1 à 5 %), un vichy, des rayures ou des fleurs en ont beaucoup (souvent plus de 30 %).
+async function photoPatternScore(src) {
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.crossOrigin = "anonymous";
+    i.onload = () => resolve(i);
+    i.onerror = reject;
+    i.src = src.startsWith("http") ? `${src}${src.includes("?") ? "&" : "?"}tx=1` : src;
+  });
+  const N = 128;
+  const c = document.createElement("canvas");
+  c.width = N; c.height = N;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, N, N);
+  ctx.drawImage(img, img.width * 0.25, img.height * 0.25, img.width * 0.5, img.height * 0.5, 0, 0, N, N);
+  const d = ctx.getImageData(0, 0, N, N).data;
+  const L = new Float32Array(N * N);
+  for (let k = 0; k < N * N; k++) L[k] = 0.299 * d[k * 4] + 0.587 * d[k * 4 + 1] + 0.114 * d[k * 4 + 2];
+  let jumps = 0, total = 0;
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      if (x < N - 1) { total++; if (Math.abs(L[y * N + x] - L[y * N + x + 1]) > 25) jumps++; }
+      if (y < N - 1) { total++; if (Math.abs(L[y * N + x] - L[(y + 1) * N + x]) > 25) jumps++; }
+    }
+  }
+  return Math.round((jumps / total) * 1000) / 1000;
+}
+
 // Toutes les couleurs d'un vêtement : la principale, puis ses couleurs secondaires (motifs).
 function itemColors(item) {
   return [item.hex, ...(item.extraHexes || [])].filter(Boolean);
@@ -536,6 +576,17 @@ export default function App() {
   // Menu du bouton "+" central de la barre (éventail).
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  // Règles du générateur, réglables dans les Paramètres (gardées sur cet appareil).
+  const [genRules, setGenRules] = useState(() => {
+    try { return { onePattern: true, ...JSON.parse(localStorage.getItem("mon-armoire-rules") || "{}") }; } catch { return { onePattern: true }; }
+  });
+  function setGenRule(key, value) {
+    setGenRules((prev) => {
+      const next = { ...prev, [key]: value };
+      try { localStorage.setItem("mon-armoire-rules", JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }
   // Doublons détectés au moment d'ajouter un vêtement / d'enregistrer une tenue.
   const [itemDup, setItemDup] = useState(null);
   const [outfitDup, setOutfitDup] = useState(null);
@@ -910,14 +961,17 @@ export default function App() {
   const fingerprintsStarted = useRef(false);
   useEffect(() => {
     if (!loaded || fingerprintsStarted.current) return;
-    const todo = items.filter((i) => i.photo && !i.photoHash);
+    const todo = items.filter((i) => i.photo && (!i.photoHash || typeof i.patternScore !== "number"));
     if (todo.length === 0) return;
     fingerprintsStarted.current = true;
     (async () => {
       for (const item of todo) {
         try {
-          const h = await imageFingerprint(thumbOf(item));
-          setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, photoHash: h } : i)));
+          const patch = {};
+          if (!item.photoHash) patch.photoHash = await imageFingerprint(thumbOf(item));
+          // La texture se mesure sur la grande photo (sur la miniature, un petit vichy devient flou).
+          if (typeof item.patternScore !== "number") patch.patternScore = await photoPatternScore(item.photo);
+          setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, ...patch } : i)));
         } catch (err) {}
       }
     })();
@@ -1062,6 +1116,8 @@ export default function App() {
       } catch (err) {}
       let photoHash = null;
       try { photoHash = await imageFingerprint(croppedDataUrl); } catch {}
+      let patternScore = null;
+      try { patternScore = await photoPatternScore(croppedDataUrl); } catch {}
       const photoUrl = await uploadPhotoToStorage(croppedDataUrl, "photo");
       const thumbUrl = await uploadPhotoToStorage(await makeThumbnail(croppedDataUrl), "thumb");
       const originalUrl = await uploadPhotoToStorage(rawImageSrc, "original");
@@ -1070,7 +1126,7 @@ export default function App() {
         // On garde aussi "photoOriginal" (la source utilisée pour ce recadrage), pour pouvoir
         // rouvrir le recadreur plus tard sur l'intégralité de l'image plutôt que sur un carré déjà coupé.
         const oldItem = items.find((i) => i.id === cropTargetItemId);
-        setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: photoUrl, photoThumb: thumbUrl, photoOriginal: originalUrl, photoHash, ...(detectedHex && { hex: detectedHex, extraHexes: detectedExtras }) } : i)));
+        setItems((prev) => prev.map((i) => (i.id === cropTargetItemId ? { ...i, photo: photoUrl, photoThumb: thumbUrl, photoOriginal: originalUrl, photoHash, patternScore, ...(detectedHex && { hex: detectedHex, extraHexes: detectedExtras }) } : i)));
         // On retire les anciennes versions du stockage, maintenant qu'elles ne sont plus utilisées.
         if (oldItem) {
           deleteFromStorage(oldItem.photo);
@@ -1078,7 +1134,7 @@ export default function App() {
           deleteFromStorage(oldItem.photoOriginal);
         }
       } else {
-        setForm((prev) => ({ ...prev, photo: photoUrl, photoThumb: thumbUrl, photoOriginal: originalUrl, photoHash, ...(detectedHex && { hex: detectedHex, extraHexes: detectedExtras }) }));
+        setForm((prev) => ({ ...prev, photo: photoUrl, photoThumb: thumbUrl, photoOriginal: originalUrl, photoHash, patternScore, ...(detectedHex && { hex: detectedHex, extraHexes: detectedExtras }) }));
       }
     } catch (err) {
       alert("L'envoi de cette photo a échoué (vérifie ta connexion internet, ou réessaie dans un instant).");
@@ -1704,12 +1760,19 @@ export default function App() {
   // "prefOverride" : impose une préférence pour cette catégorie seulement
   // (sert à glisser une pièce phare dans une tenue "Oser du neuf").
   // "avoid" : pièces de la suggestion précédente, à éviter quand on régénère.
-  function randomFrom(category, colorAnchor, optional = false, prefOverride, avoid = new Set()) {
+  function randomFrom(category, colorAnchor, optional = false, prefOverride, avoid = new Set(), noPattern = false) {
     const baseItem = wizardBaseItemId ? items.find((i) => i.id === wizardBaseItemId) : null;
     if (baseItem && effectiveCategory(baseItem) === category) return baseItem; // la pièce en tête est toujours incluse
 
     let pool = items.filter((i) => effectiveCategory(i) === category);
     if (pool.length === 0) return undefined;
+
+    // Règle "un seul motif par tenue" : s'il y a déjà une pièce à motifs, on prend une pièce unie.
+    if (noPattern) {
+      const plain = pool.filter((i) => !isPatterned(i));
+      if (plain.length > 0) pool = plain;
+      else if (optional) return undefined; // pièce facultative : mieux vaut s'en passer
+    }
 
     // Priorité aux pièces liées ("va bien avec") à la pièce en tête, si elle en a dans cette catégorie.
     if (baseItem) {
@@ -1816,8 +1879,12 @@ export default function App() {
     // "Oser du neuf" : une seule pièce phare (parmi tes plus portées) pour garder un repère,
     // tout le reste en pièces peu portées. Pas besoin si tu as déjà choisi une pièce en tête.
     let starCat = null;
+    // Déjà une pièce à motifs dans la tenue ? (les accessoires ne comptent pas)
+    let hasPattern = !!(baseItem && effectiveCategory(baseItem) !== "Accessoire" && isPatterned(baseItem));
     function pick(category, optional = false) {
-      const item = randomFrom(category, colorAnchor, optional, category === starCat ? "souvent" : undefined, avoid);
+      const noPattern = genRules.onePattern && hasPattern && category !== "Accessoire";
+      const item = randomFrom(category, colorAnchor, optional, category === starCat ? "souvent" : undefined, avoid, noPattern);
+      if (item && category !== "Accessoire" && isPatterned(item)) hasPattern = true;
       if (item && !colorAnchor && !genColorFamily) {
         const fam = hexToColorFamily(item.hex);
         if (fam !== "Neutres") colorAnchor = fam;
@@ -3728,6 +3795,16 @@ export default function App() {
                   {renderSwitch(!!it.handmade, () => update((i) => ({ handmade: !i.handmade })), "Fait main")}
                 </div>
 
+                <div className="flex items-center justify-between py-3" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                  <span>
+                    <span className="block" style={{ fontSize: 15, fontWeight: 600 }}>À motifs</span>
+                    <span className="block text-xs" style={{ color: COLORS.muted }}>
+                      {typeof it.pattern === "boolean" ? "Réglé par toi" : typeof it.patternScore === "number" ? "Deviné d'après la photo" : "Analyse de la photo en cours…"}
+                    </span>
+                  </span>
+                  {renderSwitch(isPatterned(it), () => update((i) => ({ pattern: !isPatterned(i) })), "À motifs")}
+                </div>
+
                 <div className="py-4" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
                   <p className="mb-3" style={{ fontSize: 15, fontWeight: 600 }}>Couleurs</p>
                   <div className="flex flex-wrap gap-2">
@@ -4511,6 +4588,19 @@ export default function App() {
                       {(form.extraHexes || []).length > 0 && <span className="inline-flex align-middle mr-1.5">{renderPaletteDots(form.extraHexes, 18)}</span>}
                       <input type="color" value={form.hex} onChange={(e) => setForm({ ...form, hex: e.target.value })} className="w-10 h-9 rounded cursor-pointer" style={{ border: `1px solid ${COLORS.line}` }} />
                     </div>
+                    {/* Motif détecté sur la photo (touche pour corriger) */}
+                    {form.photo && (typeof form.patternScore === "number" || typeof form.pattern === "boolean") && (
+                      <button
+                        type="button"
+                        onClick={() => setForm((f) => ({ ...f, pattern: !isPatterned(f) }))}
+                        className="h-9 px-3 rounded-full text-xs flex items-center gap-1.5"
+                        style={{ border: `1px solid ${COLORS.line}`, color: isPatterned(form) ? COLORS.ink : COLORS.muted, fontWeight: 600 }}
+                        aria-label="Motif : toucher pour changer"
+                      >
+                        <span style={{ width: 12, height: 12, borderRadius: 3, background: isPatterned(form) ? "repeating-linear-gradient(45deg, #FF4B33 0 2px, #FFFFFF 2px 4px)" : "#E2E0DC" }} />
+                        {isPatterned(form) ? "À motifs" : "Uni"}
+                      </button>
+                    )}
                     <div className="w-full">
                       <div className="flex gap-1.5 flex-wrap">
                         {WEATHER_TAGS.map((w) => (
@@ -4759,6 +4849,18 @@ export default function App() {
                     <button type="button" onClick={() => { setSyncSetup({ code: "", step: syncCode ? "info" : "code", remote: null, busy: false, error: "" }); setShowSyncSheet(true); }} className="px-4 h-9 rounded-full text-sm flex-shrink-0" style={{ background: COLORS.haze, fontWeight: 600 }}>
                       {syncCode ? "Gérer" : "Activer"}
                     </button>
+                  </div>
+
+                  {/* Règles du générateur */}
+                  <div className="py-3" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                    <p className="mb-2" style={{ fontSize: 15, fontWeight: 600 }}>Règles du générateur</p>
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm">Un seul motif par tenue</p>
+                        <p className="text-xs" style={{ color: COLORS.muted }}>Jamais deux pièces à motifs ensemble (accessoires à part)</p>
+                      </div>
+                      {renderSwitch(!!genRules.onePattern, () => setGenRule("onePattern", !genRules.onePattern), "Un seul motif par tenue")}
+                    </div>
                   </div>
 
                   {/* Sauvegarde */}
