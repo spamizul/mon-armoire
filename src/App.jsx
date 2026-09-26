@@ -2549,7 +2549,10 @@ export default function App() {
     if (m && !force) { setReusableDup({ m, itemIds, label, dateStr, entryId }); return false; }
     setReusableDup(null);
     const newOutfitId = Date.now() + 1;
-    const newOutfit = { id: newOutfitId, name: label.trim() || nextOutfitName(), itemIds, favorite: false, wornDates: [], weather: [], occasions: [] };
+    // Une impro ("Mix 24 sept.") qui rejoint ta collection devient une vraie "Tenue N".
+    const cleanLabel = (label || "").trim();
+    const name = !cleanLabel || /^mix \d/i.test(cleanLabel) || ["tenue", "tenue du jour"].includes(cleanLabel.toLowerCase()) ? nextOutfitName() : cleanLabel;
+    const newOutfit = { id: newOutfitId, name, itemIds, favorite: false, wornDates: [], weather: [], occasions: [] };
     setOutfits((prev) => [...prev, newOutfit]);
 
     if (dateStr && entryId) {
@@ -2601,7 +2604,8 @@ export default function App() {
       }));
     }
     setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, wornDates: [...(i.wornDates || []), new Date().toISOString()] } : i)));
-    showToast({ text: `Ajouté à « ${label} »`, sub: "Ta tenue d'aujourd'hui", action: "Voir", onAction: () => changeView("accueil") });
+    const shownName = entryDisplayName(today, list.length ? list[0] : { label });
+    showToast({ text: `Ajouté à « ${shownName} »`, sub: "Ta tenue d'aujourd'hui", action: "Voir", onAction: () => changeView("accueil") });
   }
 
   // Ouvre la création d'une tenue (depuis l'onglet Tenues ou le bouton "+").
@@ -2825,6 +2829,18 @@ export default function App() {
     return cells;
   }
 
+  // Nom affiché d'une tenue prévue :
+  // - tenue enregistrée → son nom actuel (Tenue 3, ou le nom que tu lui as donné) ;
+  // - tenue improvisée → le nom que tu as tapé, sinon "Mix 24 sept.".
+  function entryDisplayName(dateStr, entry) {
+    const saved = entry.outfitId && outfits.find((o) => o.id === entry.outfitId);
+    if (saved) return saved.name;
+    const generic = !entry.label || ["tenue", "tenue du jour"].includes(entry.label.trim().toLowerCase());
+    if (!generic) return entry.label;
+    const [y, m, d] = dateStr.split("-").map(Number);
+    return `Mix ${new Date(y, m - 1, d).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}`;
+  }
+
   // Toutes les tenues planifiées, toutes dates confondues, une ligne par tenue
   // (une même date peut donc apparaître plusieurs fois si plusieurs tenues y sont prévues).
   const agendaEntries = Object.entries(agenda)
@@ -2832,7 +2848,7 @@ export default function App() {
       normalizeDayEntries(dayValue).map((entry) => ({
         dateStr,
         entryId: entry.id,
-        label: entry.label,
+        label: entryDisplayName(dateStr, entry),
         outfitId: entry.outfitId, // présent si cette entrée a été créée depuis une tenue enregistrée
         wornPhoto: entry.wornPhoto || null, // photo de la tenue portée (Carnet)
         planItems: entry.itemIds.map((id) => items.find((i) => i.id === id)).filter(Boolean), // au cas où un vêtement aurait été supprimé depuis
