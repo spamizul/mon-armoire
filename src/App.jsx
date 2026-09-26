@@ -2985,21 +2985,21 @@ export default function App() {
   }
 
   // Le « je la porte » a deux états bien distincts :
-  // pas encore fait → un vrai bouton corail ; fait → une bande rosée (pas un bouton) avec un petit « Annuler ».
+  // pas encore fait → un vrai bouton corail ; fait → une pilule blanche « Portée aujourd'hui ✓ ». La toucher annule.
   function renderWearState({ done, onDo, onUndo, fem = true, height = 50, className = "" }) {
     if (done) {
       return (
-        <div className={`w-full flex items-center gap-2.5 rounded-full pl-2 pr-1 ${className}`} style={{ height, background: "#FDE8E5" }}>
-          <span className="rounded-full flex items-center justify-center flex-shrink-0" style={{ width: height - 16, height: height - 16, background: COLORS.rose }}>
-            <Check size={16} color="#FFFFFF" strokeWidth={3} />
-          </span>
-          <span className="flex-1 min-w-0 truncate text-sm" style={{ fontWeight: 700, color: COLORS.ink }}>{fem ? "Portée" : "Porté"} aujourd'hui</span>
-          {onUndo && (
-            <button type="button" onClick={onUndo} className="h-full px-3 text-xs flex-shrink-0" style={{ color: COLORS.muted, fontWeight: 600, textDecoration: "underline", textUnderlineOffset: 3 }}>
-              Annuler
-            </button>
-          )}
-        </div>
+        <button
+          type="button"
+          onClick={onUndo}
+          disabled={!onUndo}
+          aria-label={`${fem ? "Portée" : "Porté"} aujourd'hui (toucher pour annuler)`}
+          aria-pressed={true}
+          className={`w-full rounded-full flex items-center justify-center text-sm ${className}`}
+          style={{ height, fontWeight: 700, background: "#FFFFFF", color: COLORS.ink }}
+        >
+          {fem ? "Portée" : "Porté"} aujourd'hui ✓
+        </button>
       );
     }
     return (
@@ -4734,7 +4734,7 @@ export default function App() {
                       transition: "background 0.2s, box-shadow 0.2s",
                     }}
                   >
-                    {wornToday ? <Check size={20} color="#FFFFFF" strokeWidth={3} /> : <Shirt size={18} />}
+                    {wornToday ? <Check size={20} color="#FFFFFF" strokeWidth={3} /> : <Sun size={19} />}
                   </button>
               </div>
             </div>
@@ -5000,12 +5000,30 @@ export default function App() {
                       <div className="flex items-center justify-center text-sm" style={{ height: 200, borderRadius: 18, background: "#FFFFFF", color: COLORS.muted }}>Aucune pièce</div>
                     )}
 
-                    {renderWearState({
-                      done: validated,
-                      onDo: () => { markOutfitWorn(outfit); showToast({ text: "Portée aujourd'hui", sub: "Ajoutée à ta page Aujourd'hui" }); },
-                      onUndo: () => { unmarkOutfitWorn(outfit); showToast({ text: "Plus comptée comme portée aujourd'hui" }); },
-                      className: "mt-4",
-                    })}
+                    {/* Portée aujourd'hui : bouton rond calé à droite. Blanc = pas encore ; corail = portée. Toucher à nouveau annule. */}
+                    <div className="flex justify-end mt-4">
+                      <button
+                        type="button"
+                        aria-label={validated ? "Portée aujourd'hui (toucher pour annuler)" : "Je la porte aujourd'hui"}
+                        aria-pressed={validated}
+                        title={validated ? "Portée aujourd'hui" : "Je la porte aujourd'hui"}
+                        onClick={() => {
+                          if (validated) { unmarkOutfitWorn(outfit); showToast({ text: "Plus comptée comme portée aujourd'hui" }); }
+                          else { markOutfitWorn(outfit); showToast({ text: "Portée aujourd'hui", sub: "Ajoutée à ta page Aujourd'hui" }); }
+                        }}
+                        style={{
+                          ...roundBtn,
+                          width: 50,
+                          height: 50,
+                          borderRadius: 25,
+                          background: validated ? COLORS.rose : "#FFFFFF",
+                          boxShadow: validated ? "0 6px 16px rgba(255,75,51,0.3)" : "none",
+                          transition: "background 0.2s, box-shadow 0.2s",
+                        }}
+                      >
+                        {validated ? <Check size={20} color="#FFFFFF" strokeWidth={3} /> : <Sun size={19} />}
+                      </button>
+                    </div>
                   </div>
 
                   {/* Nom (modifiable) */}
