@@ -627,6 +627,9 @@ export default function App() {
   const [dayViewReadOnly, setDayViewReadOnly] = useState(false);
   // Sélecteur pour ajouter / retirer des pièces d'une tenue prévue (sans toucher à la tenue enregistrée).
   const [entryPicker, setEntryPicker] = useState(null);
+  // Popup « Planifier » (bouton agenda des fiches) : { kind: "item" | "outfit", id, month, date, wear }
+  // wear = true quand c'est le soleil qui l'ouvre (plusieurs tenues prévues aujourd'hui : laquelle compléter ?)
+  const [planSheet, setPlanSheet] = useState(null);
   // Quand une fiche en ouvre une autre (tenue → pièce, pièce → tenue), la dernière ouverte passe devant.
   const [lastFiche, setLastFiche] = useState("item");
   const [carnetShowPieces, setCarnetShowPieces] = useState(false);
@@ -2617,7 +2620,7 @@ export default function App() {
 
   // "Je le porte aujourd'hui" depuis la fiche d'un vêtement : on l'ajoute à la tenue du jour
   // (on la crée si rien n'est prévu) et on le compte comme porté. Un 2e toucher annule.
-  function wearItemToday(item) {
+  function wearItemToday(item, targetEntryId) {
     const today = todayKey();
     const todayStr = new Date().toDateString();
     const wornToday = (item.wornDates || []).some((d) => new Date(d).toDateString() === todayStr);
@@ -2634,12 +2637,18 @@ export default function App() {
       return;
     }
     const list = normalizeDayEntries(agenda[today]);
+    // Plusieurs tenues prévues aujourd'hui : on demande laquelle compléter.
+    if (list.length > 1 && targetEntryId === undefined) {
+      setPlanSheet({ kind: "item", id: item.id, month: new Date(), date: today, wear: true });
+      return;
+    }
+    const chosen = targetEntryId === "new" ? null : list.find((e) => e.id === targetEntryId) || list[0];
     let label;
-    if (list.length === 0) {
+    if (!chosen) {
       label = "Tenue du jour";
       setAgenda((prev) => ({ ...prev, [today]: [...normalizeDayEntries(prev[today]), { id: Date.now(), label, itemIds: [item.id] }] }));
     } else {
-      const target = list[0];
+      const target = chosen;
       label = target.label;
       setAgenda((prev) => ({
         ...prev,
@@ -2647,7 +2656,7 @@ export default function App() {
       }));
     }
     setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, wornDates: [...(i.wornDates || []), new Date().toISOString()] } : i)));
-    const shownName = entryDisplayName(today, list.length ? list[0] : { label });
+    const shownName = entryDisplayName(today, chosen || { label });
     showToast({ text: `Ajouté à « ${shownName} »`, sub: "Ta tenue d'aujourd'hui", action: "Voir", onAction: () => changeView("accueil") });
   }
 
@@ -3080,6 +3089,67 @@ export default function App() {
   }
 
   // Ajoute un vêtement à une tenue précise (utilisé pour ajouter ou échanger depuis la popup).
+  // ── Planifier depuis une fiche (bouton agenda) ──
+  // Date longue pour la popup et les messages : "samedi 3 octobre".
+  function formatLongDate(dateStr) {
+    if (dateStr === todayKey()) return "aujourd'hui";
+    if (dateStr === tomorrowKey()) return "demain";
+    const [y, m, d] = dateStr.split("-").map(Number);
+    return "le " + new Date(y, m - 1, d).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
+  }
+
+  // Ouvre ce jour dans l'Agenda (bouton "Voir" des messages).
+  function openDayInAgenda(dateStr) {
+    setDetailItemId(null);
+    setDetailOutfitId(null);
+    changeView("agenda");
+    setAgendaTab("calendrier");
+    setDayViewReadOnly(false);
+    setTimeout(() => setDayViewDate(dateStr), 0);
+  }
+
+  // Ajoute une pièce à une tenue prévue (entryId) ou crée une nouvelle tenue ce jour-là (entryId = "new").
+  function planItemOn(dateStr, itemId, entryId) {
+    const list = normalizeDayEntries(agenda[dateStr]);
+    const target = entryId === "new" ? null : list.find((e) => e.id === entryId);
+    if (target) {
+      if (!target.itemIds.includes(itemId)) addItemToEntry(dateStr, target.id, itemId);
+    } else {
+      // On lui donne tout de suite son vrai nom « Mix 27 sept. », pour qu'il s'affiche pareil partout.
+      const [y, m, d] = dateStr.split("-").map(Number);
+      const mixLabel = `Mix ${new Date(y, m - 1, d).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}`;
+      setAgenda((prev) => ({ ...prev, [dateStr]: [...normalizeDayEntries(prev[dateStr]), { id: Date.now(), label: mixLabel, itemIds: [itemId] }] }));
+    }
+    const name = target ? entryDisplayName(dateStr, target) : `Mix ${(() => { const [y, m, d] = dateStr.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString("fr-FR", { day: "numeric", month: "short" }); })()}`;
+    showToast({ text: `Ajouté à « ${name} »`, sub: `Prévu ${formatLongDate(dateStr)}`, action: "Voir", onAction: () => openDayInAgenda(dateStr) });
+    setPlanSheet(null);
+  }
+
+  // Planifie une tenue enregistrée entière à une date.
+  function planOutfitOn(dateStr, outfit) {
+    const list = normalizeDayEntries(agenda[dateStr]);
+    if (list.some((e) => e.outfitId === outfit.id)) {
+      showToast({ text: `Déjà prévue ${formatLongDate(dateStr)}`, action: "Voir", onAction: () => openDayInAgenda(dateStr) });
+      setPlanSheet(null);
+      return;
+    }
+    setAgenda((prev) => ({ ...prev, [dateStr]: [...normalizeDayEntries(prev[dateStr]), { id: Date.now(), label: outfit.name, itemIds: outfit.itemIds, outfitId: outfit.id }] }));
+    showToast({ text: `« ${outfit.name} » prévue`, sub: formatLongDate(dateStr).replace(/^./, (c) => c.toUpperCase()), action: "Voir", onAction: () => openDayInAgenda(dateStr) });
+    setPlanSheet(null);
+  }
+
+  // Toucher un jour dans la popup : on planifie tout de suite s'il n'y a rien ce jour-là, sinon on demande où.
+  function pickPlanDay(dateStr) {
+    if (!planSheet) return;
+    if (planSheet.kind === "outfit") {
+      const outfit = outfits.find((o) => o.id === planSheet.id);
+      if (outfit) planOutfitOn(dateStr, outfit);
+      return;
+    }
+    if (normalizeDayEntries(agenda[dateStr]).length === 0) planItemOn(dateStr, planSheet.id, "new");
+    else setPlanSheet((p) => ({ ...p, date: dateStr }));
+  }
+
   function addItemToEntry(dateStr, entryId, itemId) {
     setAgenda((prev) => ({
       ...prev,
@@ -4716,6 +4786,16 @@ export default function App() {
                     <Camera size={18} />
                     <input type="file" accept="image/*" onChange={(e) => handlePhotoChange(e, it.id)} className="hidden" />
                   </label>
+                  {/* Planifier cette pièce un autre jour */}
+                  <button
+                    type="button"
+                    aria-label="Planifier cette pièce"
+                    title="Planifier"
+                    onClick={() => setPlanSheet({ kind: "item", id: it.id, month: new Date(), date: null })}
+                    style={{ ...roundBtn, width: 50, height: 50, borderRadius: 25, marginLeft: "auto" }}
+                  >
+                    <Calendar size={18} />
+                  </button>
                   {/* Porté aujourd'hui : un simple bouton rond. Blanc = pas encore porté ; corail = porté. Toucher à nouveau annule. */}
                   <button
                     type="button"
@@ -4728,7 +4808,6 @@ export default function App() {
                       width: 50,
                       height: 50,
                       borderRadius: 25,
-                      marginLeft: "auto",
                       background: wornToday ? COLORS.rose : "#FFFFFF",
                       boxShadow: wornToday ? "0 6px 16px rgba(255,75,51,0.3)" : "none",
                       transition: "background 0.2s, box-shadow 0.2s",
@@ -5001,7 +5080,17 @@ export default function App() {
                     )}
 
                     {/* Portée aujourd'hui : bouton rond calé à droite. Blanc = pas encore ; corail = portée. Toucher à nouveau annule. */}
-                    <div className="flex justify-end mt-4">
+                    <div className="flex justify-end gap-2 mt-4">
+                      {/* Planifier cette tenue un autre jour */}
+                      <button
+                        type="button"
+                        aria-label="Planifier cette tenue"
+                        title="Planifier"
+                        onClick={() => setPlanSheet({ kind: "outfit", id: outfit.id, month: new Date(), date: null })}
+                        style={{ ...roundBtn, width: 50, height: 50, borderRadius: 25 }}
+                      >
+                        <Calendar size={18} />
+                      </button>
                       <button
                         type="button"
                         aria-label={validated ? "Portée aujourd'hui (toucher pour annuler)" : "Je la porte aujourd'hui"}
@@ -6034,6 +6123,162 @@ export default function App() {
               </div>
             )}
       </div>
+
+      {/* ── Popup « Planifier » : calendrier, puis (si besoin) à quelle tenue ajouter la pièce ── */}
+      {planSheet && (() => {
+        const subject = planSheet.kind === "item" ? items.find((i) => i.id === planSheet.id) : outfits.find((o) => o.id === planSheet.id);
+        if (!subject) return null;
+        const close = () => setPlanSheet(null);
+        const m = planSheet.month;
+        const todayK = todayKey();
+        const dayList = planSheet.date ? normalizeDayEntries(agenda[planSheet.date]) : [];
+        const entryItems = (e) => e.itemIds.map((id) => items.find((i) => i.id === id)).filter(Boolean);
+        return (
+          <div onClick={close} className="fixed inset-0 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.4)", zIndex: 56 }}>
+            <div onClick={(ev) => ev.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
+              <div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+
+              {!planSheet.date ? (
+                <>
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Planifier</p>
+                    <button onClick={close} aria-label="Fermer" className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <p className="text-xs mb-4" style={{ color: COLORS.muted }}>Choisis le jour où tu veux porter « {subject.name} ».</p>
+
+                  <div className="p-4 rounded-2xl" style={{ background: COLORS.haze }}>
+                    <div className="flex items-center justify-between mb-2">
+                      <button
+                        type="button"
+                        aria-label="Mois précédent"
+                        onClick={() => setPlanSheet((p) => ({ ...p, month: new Date(p.month.getFullYear(), p.month.getMonth() - 1, 1) }))}
+                        className="w-8 h-8 rounded-full flex items-center justify-center"
+                        style={{ background: COLORS.ivory }}
+                      >
+                        <ArrowLeft size={14} />
+                      </button>
+                      <p className="display text-sm" style={{ fontWeight: 700, textTransform: "capitalize" }}>
+                        {m.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
+                      </p>
+                      <button
+                        type="button"
+                        aria-label="Mois suivant"
+                        onClick={() => setPlanSheet((p) => ({ ...p, month: new Date(p.month.getFullYear(), p.month.getMonth() + 1, 1) }))}
+                        className="w-8 h-8 rounded-full flex items-center justify-center"
+                        style={{ background: COLORS.ivory }}
+                      >
+                        <ArrowLeft size={14} style={{ transform: "rotate(180deg)" }} />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-7 gap-1 mb-1">
+                      {["L", "M", "M", "J", "V", "S", "D"].map((d, i) => (
+                        <p key={i} className="text-center text-[10px]" style={{ opacity: 0.4 }}>{d}</p>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-7 gap-1">
+                      {buildCalendarCells(m).map((day, i) => {
+                        if (day === null) return <div key={i} />;
+                        const dateKey = toDateKey(m.getFullYear(), m.getMonth(), day);
+                        const past = dateKey < todayK;
+                        const dayEntries = agendaEntries.filter((e) => e.dateStr === dateKey);
+                        const hasEntries = dayEntries.length > 0;
+                        const dayPal = entriesPalette(dayEntries, 3);
+                        const isToday = dateKey === todayK;
+                        return (
+                          <button
+                            key={i}
+                            type="button"
+                            disabled={past}
+                            onClick={() => pickPlanDay(dateKey)}
+                            className="aspect-square rounded-lg flex flex-col items-center justify-center relative text-xs"
+                            style={{
+                              background: isToday ? COLORS.ink : hasEntries ? "#FFFFFF" : "transparent",
+                              color: isToday ? "white" : COLORS.ink,
+                              fontWeight: hasEntries || isToday ? 700 : 400,
+                              opacity: past ? 0.25 : 1,
+                            }}
+                          >
+                            <span style={{ marginTop: hasEntries ? -6 : 0 }}>{day}</span>
+                            {hasEntries && (
+                              <span className="absolute flex" style={{ bottom: 4, paddingLeft: 3 }}>
+                                {(dayPal.length ? dayPal : [COLORS.rose]).map((hex) => (
+                                  <span key={hex} style={{ width: 7, height: 7, borderRadius: 4, background: hex, marginLeft: -3, boxShadow: `0 0 0 1px ${isToday ? COLORS.ink : "#FFFFFF"}` }} />
+                                ))}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between mb-1 gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {!planSheet.wear && (
+                        <button type="button" aria-label="Changer de jour" onClick={() => setPlanSheet((p) => ({ ...p, date: null }))} className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze }}>
+                          <ArrowLeft size={14} />
+                        </button>
+                      )}
+                      <p className="display truncate" style={{ fontWeight: 700, fontSize: 19 }}>
+                        {formatLongDate(planSheet.date).replace(/^le /, "").replace(/^./, (c) => c.toUpperCase())}
+                      </p>
+                    </div>
+                    <button onClick={close} aria-label="Fermer" className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze }}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <p className="text-xs mb-4" style={{ color: COLORS.muted }}>
+                    {planSheet.wear ? "Tu as plusieurs tenues prévues : avec laquelle tu portes « " + subject.name + " » ?" : "À quelle tenue ajouter « " + subject.name + " » ?"}
+                  </p>
+                  <div className="flex flex-col gap-2">
+                    {dayList.map((e) => {
+                      const pieces = entryItems(e);
+                      const already = e.itemIds.includes(subject.id);
+                      return (
+                        <button
+                          key={e.id}
+                          type="button"
+                          disabled={already}
+                          onClick={() => (planSheet.wear ? (wearItemToday(subject, e.id), setPlanSheet(null)) : planItemOn(planSheet.date, subject.id, e.id))}
+                          className="w-full flex items-center gap-3 p-2 pr-3 rounded-2xl text-left"
+                          style={{ background: COLORS.haze, opacity: already ? 0.5 : 1 }}
+                        >
+                          <span className="flex flex-shrink-0" style={{ paddingLeft: 10 }}>
+                            {pieces.slice(0, 3).map((p) => (
+                              <span key={p.id} className="rounded-xl overflow-hidden flex items-center justify-center" style={{ width: 40, height: 40, marginLeft: -10, background: "#FFFFFF", boxShadow: `0 0 0 2px ${COLORS.haze}` }}>
+                                {p.photo ? <img src={p.photo} alt="" className="w-full h-full object-cover" /> : <Shirt size={16} color={COLORS.muted} />}
+                              </span>
+                            ))}
+                          </span>
+                          <span className="flex-1 min-w-0">
+                            <span className="block text-sm truncate" style={{ fontWeight: 700 }}>{entryDisplayName(planSheet.date, e)}</span>
+                            <span className="block text-xs" style={{ color: COLORS.muted }}>
+                              {already ? "Déjà dedans" : `${pieces.length} pièce${pieces.length > 1 ? "s" : ""}`}
+                            </span>
+                          </span>
+                          {!already && <Plus size={18} color={COLORS.rose} strokeWidth={2.5} />}
+                        </button>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      onClick={() => (planSheet.wear ? (wearItemToday(subject, "new"), setPlanSheet(null)) : planItemOn(planSheet.date, subject.id, "new"))}
+                      className="w-full h-12 rounded-full flex items-center justify-center gap-1.5 text-sm mt-2"
+                      style={{ border: `1.5px dashed ${COLORS.line}`, fontWeight: 700 }}
+                    >
+                      <Plus size={16} /> Nouvelle tenue
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Petit message de confirmation ── */}
       {toast && (
