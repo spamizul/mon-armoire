@@ -576,9 +576,11 @@ export default function App() {
   // Menu du bouton "+" central de la barre (éventail).
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showRules, setShowRules] = useState(false);
   // Règles du générateur, réglables dans les Paramètres (gardées sur cet appareil).
   const [genRules, setGenRules] = useState(() => {
-    try { return { onePattern: true, ...JSON.parse(localStorage.getItem("mon-armoire-rules") || "{}") }; } catch { return { onePattern: true }; }
+    const defaults = { onePattern: true, max3Colors: true, oneBold: true, colorRecall: true, contrast: true, oldSchool: false };
+    try { return { ...defaults, ...JSON.parse(localStorage.getItem("mon-armoire-rules") || "{}") }; } catch { return defaults; }
   });
   function setGenRule(key, value) {
     setGenRules((prev) => {
@@ -1854,7 +1856,46 @@ export default function App() {
     return top[Math.floor(Math.random() * top.length)];
   }
 
-  function suggestOutfit(avoidIds = []) {
+  // ── Règles de mode (réglables dans les Paramètres) ──
+  // Renvoie le nombre de règles non respectées par une tenue (0 = parfaite).
+  const NEUTRAL_NAMES = ["Noir", "Blanc", "Blanc cassé", "Gris", "Beige"];
+  function outfitRuleViolations(pieces) {
+    let v = 0;
+    const main = pieces.filter((i) => !["Chaussures", "Accessoire"].includes(effectiveCategory(i)));
+    const extra = pieces.filter((i) => ["Chaussures", "Accessoire"].includes(effectiveCategory(i)));
+    const names = (list) => new Set(list.flatMap(itemColors).map(hexToColorName));
+    // 1. Pas plus de 3 couleurs (les neutres ne comptent pas)
+    if (genRules.max3Colors) {
+      const colored = [...names(pieces)].filter((n) => !NEUTRAL_NAMES.includes(n));
+      if (colored.length > 3) v++;
+    }
+    // 2. Une seule pièce de couleur vive
+    if (genRules.oneBold) {
+      const bold = pieces.filter((i) => { const { s: sat, l } = hexToHsl(i.hex); return sat >= 0.55 && l > 0.3 && l < 0.72; });
+      if (bold.length > 1) v++;
+    }
+    // 3. Rappel de couleur : chaussures ou accessoire reprennent une couleur du haut / bas / robe / veste
+    if (genRules.colorRecall && extra.length && main.length) {
+      const mainNames = names(main);
+      if (![...names(extra)].some((n) => mainNames.has(n))) v++;
+    }
+    // 4. Contraste clair / foncé (sauf ton sur ton : tout de la même couleur)
+    if (genRules.contrast && main.length >= 2) {
+      const ls = main.map((i) => hexToHsl(i.hex).l);
+      const tonSurTon = new Set(main.map((i) => hexToColorName(i.hex))).size === 1;
+      if (!tonSurTon && Math.max(...ls) - Math.min(...ls) < 0.25) v++;
+    }
+    // 5. La vieille école : pas de noir avec du bleu marine, ni de noir avec du marron
+    if (genRules.oldSchool) {
+      const all = names(pieces);
+      if (all.has("Noir") && (all.has("Marine") || all.has("Marron"))) v++;
+    }
+    return v;
+  }
+
+  // On compose jusqu'à 40 tenues au hasard et on garde la première qui respecte toutes les règles
+  // (ou, à défaut, celle qui en enfreint le moins).
+  function suggestOutfit(avoidIds = [], attempt = 0, best = null) {
     const avoid = new Set(avoidIds);
     const baseItem = wizardBaseItemId ? items.find((i) => i.id === wizardBaseItemId) : null;
     setWizardFromOutfitId(null);
@@ -1959,7 +2000,12 @@ export default function App() {
 
     // ── Accessoire : une fois sur deux, s'il s'accorde aux couleurs ──
     if (forceInclude("Accessoire") || Math.random() > 0.5) picks.push(pick("Accessoire", !forceInclude("Accessoire")));
-    const found = picks.filter(Boolean);
+    let found = picks.filter(Boolean);
+    const violations = outfitRuleViolations(found);
+    const candidate = { found, violations };
+    const keep = !best || violations < best.violations ? candidate : best;
+    if (violations > 0 && attempt < 40) return suggestOutfit(avoidIds, attempt + 1, keep);
+    found = keep.found;
     setSelectedIds(found.map((i) => i.id));
     setOutfitName(found.length >= 2 ? nextOutfitName() : "");
     // Tombé pile sur une tenue déjà enregistrée ? On le signale (badge "Une de tes tenues").
@@ -4851,17 +4897,16 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* Règles du générateur */}
-                  <div className="py-3" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
-                    <p className="mb-2" style={{ fontSize: 15, fontWeight: 600 }}>Règles du générateur</p>
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm">Un seul motif par tenue</p>
-                        <p className="text-xs" style={{ color: COLORS.muted }}>Jamais deux pièces à motifs ensemble (accessoires à part)</p>
-                      </div>
-                      {renderSwitch(!!genRules.onePattern, () => setGenRule("onePattern", !genRules.onePattern), "Un seul motif par tenue")}
+                  {/* Règles du générateur : ouvre une popup à part */}
+                  <button type="button" onClick={() => setShowRules(true)} className="w-full flex items-center justify-between gap-3 py-3 text-left" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                    <div>
+                      <p style={{ fontSize: 15, fontWeight: 600 }}>Règles du générateur</p>
+                      <p className="text-xs" style={{ color: COLORS.muted }}>
+                        {Object.values(genRules).filter(Boolean).length} règle{Object.values(genRules).filter(Boolean).length > 1 ? "s" : ""} activée{Object.values(genRules).filter(Boolean).length > 1 ? "s" : ""}
+                      </p>
                     </div>
-                  </div>
+                    <ArrowLeft size={16} color={COLORS.muted} style={{ transform: "rotate(180deg)" }} />
+                  </button>
 
                   {/* Sauvegarde */}
                   <div className="py-3" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
@@ -4882,6 +4927,40 @@ export default function App() {
                     <PliLogo size={22} />
                     <span className="text-xs" style={{ color: COLORS.muted }}>pli · pli-carnet.vercel.app</span>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Règles du générateur ── */}
+            {showRules && (
+              <div onClick={() => setShowRules(false)} className="fixed inset-0 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.4)", zIndex: 54 }}>
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
+                  <div className="flex justify-center -mt-1 mb-3"><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Règles du générateur</p>
+                    <button onClick={() => setShowRules(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <p className="text-xs mb-5" style={{ color: COLORS.muted }}>Les suggestions respectent les règles activées, dès que ta garde-robe le permet.</p>
+                    <div className="flex flex-col gap-3.5">
+                      {[
+                        ["onePattern", "Un seul motif par tenue", "Jamais deux pièces à motifs ensemble (accessoires à part)"],
+                        ["max3Colors", "3 couleurs maximum", "Le noir, le blanc, le gris et le beige ne comptent pas"],
+                        ["oneBold", "Une seule couleur forte", "Une pièce vive, le reste plus doux"],
+                        ["colorRecall", "Rappel de couleur", "Chaussures ou accessoire reprennent une couleur de la tenue"],
+                        ["contrast", "Contraste clair / foncé", "Pas de tout sombre ni de tout pâle (sauf ton sur ton)"],
+                        ["oldSchool", "La vieille école", "Pas de noir avec du marine, ni avec du marron"],
+                      ].map(([key, title, sub]) => (
+                        <div key={key} className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm">{title}</p>
+                            <p className="text-xs" style={{ color: COLORS.muted }}>{sub}</p>
+                          </div>
+                          {renderSwitch(!!genRules[key], () => setGenRule(key, !genRules[key]), title)}
+                        </div>
+                      ))}
+                    </div>
                 </div>
               </div>
             )}
