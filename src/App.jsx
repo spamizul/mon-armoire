@@ -2994,7 +2994,7 @@ export default function App() {
     );
   }
 
-  function renderSilhouette(list, height, onPiece) {
+  function renderSilhouette(list, height, onPiece, overlay) {
     const used = {};
     return (
       <div style={{ position: "relative", height, borderRadius: 18, background: "#FFFFFF", overflow: "hidden" }}>
@@ -3028,6 +3028,7 @@ export default function App() {
                     : { width: "100%", height: "100%", objectFit: "cover", display: "block" }}
                 />
               )}
+              {overlay && overlay(item)}
             </div>
           );
         })}
@@ -3035,11 +3036,12 @@ export default function App() {
     );
   }
 
-  function renderFlatLay(planItems, height, onPiece) {
+  // "overlay(item)" : un petit élément posé sur chaque pièce (ex. le cadenas du générateur).
+  function renderFlatLay(planItems, height, onPiece, overlay) {
     const order = (i) => CATEGORIES.indexOf(i.category);
     const list = [...planItems].sort((a, b) => order(a) - order(b)).slice(0, 6);
     // Au moins la moitié des pièces détourées → version "silhouette" qui se chevauche.
-    if (list.filter(isCutout).length * 2 >= list.length) return renderSilhouette(list, height, onPiece);
+    if (list.filter(isCutout).length * 2 >= list.length) return renderSilhouette(list, height, onPiece, overlay);
     const layout = FLATLAY_LAYOUTS[list.length] || FLATLAY_LAYOUTS[6];
     return (
       <div style={{ position: "relative", height, borderRadius: 18, background: "#FFFFFF", overflow: "hidden" }}>
@@ -3065,6 +3067,7 @@ export default function App() {
                     : { width: "100%", height: "100%", objectFit: "cover", display: "block" }}
                 />
               )}
+              {overlay && overlay(item)}
             </div>
           );
         })}
@@ -6318,63 +6321,43 @@ export default function App() {
                             </p>
                           );
                         })()}
-                        {/* La tenue en grand */}
+                        {/* La tenue en grand : toucher une pièce = la changer ; cadenas = la garder quand on régénère */}
                         {(() => {
                           const pieces = selectedIds.map((id) => items.find((i) => i.id === id)).filter(Boolean);
+                          const lockBtn = (item) => {
+                            const locked = wizardBaseIds.includes(item.id);
+                            return (
+                              <>
+                                {locked && !isCutout(item) && <span className="absolute inset-0 pointer-events-none" style={{ borderRadius: "inherit", boxShadow: `inset 0 0 0 3px ${COLORS.rose}` }} />}
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); toggleWizardLock(item.id); }}
+                                  aria-label={locked ? `Ne plus garder : ${item.name}` : `Garder : ${item.name}`}
+                                  aria-pressed={locked}
+                                  className="absolute w-8 h-8 rounded-full flex items-center justify-center"
+                                  style={{ top: 6, right: 6, zIndex: 5, background: locked ? COLORS.rose : "rgba(255,255,255,0.92)", boxShadow: "0 1px 4px rgba(0,0,0,0.25)" }}
+                                >
+                                  {locked ? <Lock size={14} color="#FFFFFF" strokeWidth={2.5} /> : <Unlock size={14} color={COLORS.muted} strokeWidth={2.2} />}
+                                </button>
+                              </>
+                            );
+                          };
                           return pieces.length > 0 ? (
-                            <div style={{ background: COLORS.haze, borderRadius: 18, padding: 4 }}>{renderFlatLay(pieces, 300)}</div>
+                            <div style={{ background: COLORS.haze, borderRadius: 18, padding: 4 }}>
+                              {renderFlatLay(pieces, 340, (item) => setWizardSwap(selectedIds.indexOf(item.id)), lockBtn)}
+                            </div>
                           ) : (
                             <div className="flex items-center justify-center text-sm" style={{ height: 150, borderRadius: 18, background: COLORS.haze, color: COLORS.muted }}>Aucune pièce</div>
                           );
                         })()}
-
-                        {/* Les pièces : toucher = changer ; cadenas = la garder quand on régénère */}
-                        <div className="grid grid-cols-4 gap-2 mt-3">
-                          {selectedIds.map((id, index) => {
-                            const item = items.find((i) => i.id === id);
-                            if (!item) return null;
-                            const locked = wizardBaseIds.includes(id);
-                            return (
-                              <div key={item.id} className="relative">
-                                <button
-                                  type="button"
-                                  onClick={() => setWizardSwap(index)}
-                                  aria-label={`Changer : ${item.name}`}
-                                  className="w-full overflow-hidden block"
-                                  style={{ borderRadius: 12, background: COLORS.haze, boxShadow: locked ? `0 0 0 2px ${COLORS.rose}` : "none" }}
-                                >
-                                  {item.photo ? (
-                                    <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
-                                  ) : (
-                                    <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
-                                  )}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => toggleWizardLock(id)}
-                                  aria-label={locked ? `Ne plus garder : ${item.name}` : `Garder : ${item.name}`}
-                                  aria-pressed={locked}
-                                  className="absolute w-7 h-7 rounded-full flex items-center justify-center"
-                                  style={{ top: 4, right: 4, background: locked ? COLORS.rose : "rgba(255,255,255,0.92)", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }}
-                                >
-                                  {locked ? <Lock size={13} color="#FFFFFF" strokeWidth={2.5} /> : <Unlock size={13} color={COLORS.muted} strokeWidth={2.2} />}
-                                </button>
-                              </div>
-                            );
-                          })}
-                          <button
-                            type="button"
-                            onClick={() => { setWizardAddFilter("Tous"); setWizardSwap("add"); }}
-                            aria-label="Ajouter une pièce"
-                            className="flex items-center justify-center"
-                            style={{ aspectRatio: "1 / 1", borderRadius: 12, border: `1.5px dashed ${COLORS.line}`, color: COLORS.muted }}
-                          >
-                            <Plus size={20} />
+                        <div className="flex items-center justify-between gap-3 mt-2 mb-4">
+                          <p style={{ fontSize: 12, color: COLORS.muted }}>
+                            Touche une pièce pour la changer · <Lock size={10} style={{ display: "inline", verticalAlign: "-1px" }} /> pour la garder
+                          </p>
+                          <button type="button" onClick={() => { setWizardAddFilter("Tous"); setWizardSwap("add"); }} className="flex-shrink-0 h-8 px-3 rounded-full text-xs flex items-center gap-1" style={{ border: `1px solid ${COLORS.line}`, fontWeight: 700 }}>
+                            <Plus size={13} /> Pièce
                           </button>
                         </div>
-                        <p className="text-center mt-2 mb-4" style={{ fontSize: 12, color: COLORS.muted }}>
-                          Touche une pièce pour la changer · <Lock size={10} style={{ display: "inline", verticalAlign: "-1px" }} /> pour la garder
-                        </p>
 
                         {!wizardFromOutfitId && (
                           <input
