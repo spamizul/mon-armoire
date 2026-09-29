@@ -257,6 +257,44 @@ async function detectColorPalette(src) {
   return kept.map((c) => toHex(c.rgb));
 }
 
+// Couleurs toutes prêtes pour corriger à la main quand la détection s'est trompée.
+const COLOR_SWATCHES = [
+  ["Noir", "#1C1C1C"], ["Anthracite", "#3E3E3E"], ["Gris", "#8E8E8E"], ["Gris clair", "#C9C9C9"], ["Blanc", "#FFFFFF"],
+  ["Écru", "#F2EEE6"], ["Beige", "#D9C4A3"], ["Camel", "#B8895A"], ["Marron", "#6B4A32"], ["Kaki", "#6B6B3A"],
+  ["Vert sauge", "#9DAF8E"], ["Vert", "#4F7F52"], ["Vert foncé", "#1F4030"], ["Bleu ciel", "#9CC3E0"], ["Denim", "#5B7593"],
+  ["Bleu", "#3563A8"], ["Marine", "#1E2A44"], ["Lilas", "#BFA6D6"], ["Violet", "#6E4E8E"], ["Rose pâle", "#F2C9CF"],
+  ["Rose", "#E88BA0"], ["Fuchsia", "#D63F86"], ["Rouge", "#C8322D"], ["Bordeaux", "#6E1F2B"], ["Orange", "#E07A2E"],
+  ["Terracotta", "#B5573A"], ["Moutarde", "#C9A032"], ["Jaune", "#EBC948"], ["Corail", "#F07A64"], ["Pêche", "#F4C2A1"],
+];
+
+// Pipette : la couleur à un endroit précis de la photo (fx, fy entre 0 et 1), moyenne d'une petite zone.
+async function samplePhotoColor(src, fx, fy) {
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.crossOrigin = "anonymous";
+    i.onload = () => resolve(i);
+    i.onerror = reject;
+    i.src = src.startsWith("http") ? `${src}${src.includes("?") ? "&" : "?"}color=1` : src;
+  });
+  const w = 240;
+  const h = Math.max(1, Math.round((w * img.height) / img.width));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, w, h);
+  const x = Math.min(w - 4, Math.max(3, Math.round(fx * w)));
+  const y = Math.min(h - 4, Math.max(3, Math.round(fy * h)));
+  const data = ctx.getImageData(x - 3, y - 3, 7, 7).data;
+  let r = 0, g = 0, b = 0, n = 0;
+  for (let p = 0; p < data.length; p += 4) {
+    if (data[p + 3] < 128) continue; // fond transparent (photo détourée)
+    r += data[p]; g += data[p + 1]; b += data[p + 2]; n++;
+  }
+  if (!n) return null;
+  return "#" + [r, g, b].map((v) => Math.round(v / n).toString(16).padStart(2, "0")).join("");
+}
+
 // Couleur principale seulement (compatibilité).
 async function detectDominantColor(src) {
   return (await detectColorPalette(src))[0];
@@ -627,11 +665,15 @@ export default function App() {
   const [dayViewReadOnly, setDayViewReadOnly] = useState(false);
   // Sélecteur pour ajouter / retirer des pièces d'une tenue prévue (sans toucher à la tenue enregistrée).
   const [entryPicker, setEntryPicker] = useState(null);
-  // Popup « Planifier » (bouton agenda des fiches) : { kind: "item" | "outfit", id, month, date, wear }
-  // wear = true quand c'est le soleil qui l'ouvre (plusieurs tenues prévues aujourd'hui : laquelle compléter ?)
-  const [planSheet, setPlanSheet] = useState(null);
+  // Choix d'une couleur à la main : { target: "item" | "form", itemId, idx (-1 = principale, n = secondaire, "new" = en ajouter une), draft, mark }
+  const [colorSheet, setColorSheet] = useState(null);
   // Quand une fiche en ouvre une autre (tenue → pièce, pièce → tenue), la dernière ouverte passe devant.
   const [lastFiche, setLastFiche] = useState("item");
+  // Fiche vêtement : sens du dernier passage à la pièce voisine (pour l'animation), et départ du glissé.
+  const [itemNavDir, setItemNavDir] = useState("next");
+  const itemSwipe = useRef(null);
+  const [outfitNavDir, setOutfitNavDir] = useState("next");
+  const outfitSwipe = useRef(null);
   const [carnetShowPieces, setCarnetShowPieces] = useState(false);
   useEffect(() => { setCarnetShowPieces(false); }, [carnetViewId]);
   // Recherche dans les Tenues (ouverte avec la loupe, avec les tags dessous).
@@ -1473,6 +1515,9 @@ export default function App() {
   }
 
   const detailItem = items.find((i) => i.id === detailItemId);
+  // Fiche refermée : la prochaine ouverture repart avec l'animation normale.
+  useEffect(() => { if (detailItemId === null) setItemNavDir("next"); }, [detailItemId]);
+  useEffect(() => { if (detailOutfitId === null) setOutfitNavDir("next"); }, [detailOutfitId]);
 
   // ── ACTIONS SUR LES TENUES ──────────────────
   function toggleSelected(id) {
@@ -2620,7 +2665,7 @@ export default function App() {
 
   // "Je le porte aujourd'hui" depuis la fiche d'un vêtement : on l'ajoute à la tenue du jour
   // (on la crée si rien n'est prévu) et on le compte comme porté. Un 2e toucher annule.
-  function wearItemToday(item, targetEntryId) {
+  function wearItemToday(item) {
     const today = todayKey();
     const todayStr = new Date().toDateString();
     const wornToday = (item.wornDates || []).some((d) => new Date(d).toDateString() === todayStr);
@@ -2637,18 +2682,12 @@ export default function App() {
       return;
     }
     const list = normalizeDayEntries(agenda[today]);
-    // Plusieurs tenues prévues aujourd'hui : on demande laquelle compléter.
-    if (list.length > 1 && targetEntryId === undefined) {
-      setPlanSheet({ kind: "item", id: item.id, month: new Date(), date: today, wear: true });
-      return;
-    }
-    const chosen = targetEntryId === "new" ? null : list.find((e) => e.id === targetEntryId) || list[0];
     let label;
-    if (!chosen) {
+    if (list.length === 0) {
       label = "Tenue du jour";
       setAgenda((prev) => ({ ...prev, [today]: [...normalizeDayEntries(prev[today]), { id: Date.now(), label, itemIds: [item.id] }] }));
     } else {
-      const target = chosen;
+      const target = list[0];
       label = target.label;
       setAgenda((prev) => ({
         ...prev,
@@ -2656,7 +2695,7 @@ export default function App() {
       }));
     }
     setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, wornDates: [...(i.wornDates || []), new Date().toISOString()] } : i)));
-    const shownName = entryDisplayName(today, chosen || { label });
+    const shownName = entryDisplayName(today, list.length ? list[0] : { label });
     showToast({ text: `Ajouté à « ${shownName} »`, sub: "Ta tenue d'aujourd'hui", action: "Voir", onAction: () => changeView("accueil") });
   }
 
@@ -2994,21 +3033,21 @@ export default function App() {
   }
 
   // Le « je la porte » a deux états bien distincts :
-  // pas encore fait → un vrai bouton corail ; fait → une pilule blanche « Portée aujourd'hui ✓ ». La toucher annule.
+  // pas encore fait → un vrai bouton corail ; fait → une bande rosée (pas un bouton) avec un petit « Annuler ».
   function renderWearState({ done, onDo, onUndo, fem = true, height = 50, className = "" }) {
     if (done) {
       return (
-        <button
-          type="button"
-          onClick={onUndo}
-          disabled={!onUndo}
-          aria-label={`${fem ? "Portée" : "Porté"} aujourd'hui (toucher pour annuler)`}
-          aria-pressed={true}
-          className={`w-full rounded-full flex items-center justify-center text-sm ${className}`}
-          style={{ height, fontWeight: 700, background: "#FFFFFF", color: COLORS.ink }}
-        >
-          {fem ? "Portée" : "Porté"} aujourd'hui ✓
-        </button>
+        <div className={`w-full flex items-center gap-2.5 rounded-full pl-2 pr-1 ${className}`} style={{ height, background: "#FDE8E5" }}>
+          <span className="rounded-full flex items-center justify-center flex-shrink-0" style={{ width: height - 16, height: height - 16, background: COLORS.rose }}>
+            <Check size={16} color="#FFFFFF" strokeWidth={3} />
+          </span>
+          <span className="flex-1 min-w-0 truncate text-sm" style={{ fontWeight: 700, color: COLORS.ink }}>{fem ? "Portée" : "Porté"} aujourd'hui</span>
+          {onUndo && (
+            <button type="button" onClick={onUndo} className="h-full px-3 text-xs flex-shrink-0" style={{ color: COLORS.muted, fontWeight: 600, textDecoration: "underline", textUnderlineOffset: 3 }}>
+              Annuler
+            </button>
+          )}
+        </div>
       );
     }
     return (
@@ -3089,67 +3128,6 @@ export default function App() {
   }
 
   // Ajoute un vêtement à une tenue précise (utilisé pour ajouter ou échanger depuis la popup).
-  // ── Planifier depuis une fiche (bouton agenda) ──
-  // Date longue pour la popup et les messages : "samedi 3 octobre".
-  function formatLongDate(dateStr) {
-    if (dateStr === todayKey()) return "aujourd'hui";
-    if (dateStr === tomorrowKey()) return "demain";
-    const [y, m, d] = dateStr.split("-").map(Number);
-    return "le " + new Date(y, m - 1, d).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
-  }
-
-  // Ouvre ce jour dans l'Agenda (bouton "Voir" des messages).
-  function openDayInAgenda(dateStr) {
-    setDetailItemId(null);
-    setDetailOutfitId(null);
-    changeView("agenda");
-    setAgendaTab("calendrier");
-    setDayViewReadOnly(false);
-    setTimeout(() => setDayViewDate(dateStr), 0);
-  }
-
-  // Ajoute une pièce à une tenue prévue (entryId) ou crée une nouvelle tenue ce jour-là (entryId = "new").
-  function planItemOn(dateStr, itemId, entryId) {
-    const list = normalizeDayEntries(agenda[dateStr]);
-    const target = entryId === "new" ? null : list.find((e) => e.id === entryId);
-    if (target) {
-      if (!target.itemIds.includes(itemId)) addItemToEntry(dateStr, target.id, itemId);
-    } else {
-      // On lui donne tout de suite son vrai nom « Mix 27 sept. », pour qu'il s'affiche pareil partout.
-      const [y, m, d] = dateStr.split("-").map(Number);
-      const mixLabel = `Mix ${new Date(y, m - 1, d).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}`;
-      setAgenda((prev) => ({ ...prev, [dateStr]: [...normalizeDayEntries(prev[dateStr]), { id: Date.now(), label: mixLabel, itemIds: [itemId] }] }));
-    }
-    const name = target ? entryDisplayName(dateStr, target) : `Mix ${(() => { const [y, m, d] = dateStr.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString("fr-FR", { day: "numeric", month: "short" }); })()}`;
-    showToast({ text: `Ajouté à « ${name} »`, sub: `Prévu ${formatLongDate(dateStr)}`, action: "Voir", onAction: () => openDayInAgenda(dateStr) });
-    setPlanSheet(null);
-  }
-
-  // Planifie une tenue enregistrée entière à une date.
-  function planOutfitOn(dateStr, outfit) {
-    const list = normalizeDayEntries(agenda[dateStr]);
-    if (list.some((e) => e.outfitId === outfit.id)) {
-      showToast({ text: `Déjà prévue ${formatLongDate(dateStr)}`, action: "Voir", onAction: () => openDayInAgenda(dateStr) });
-      setPlanSheet(null);
-      return;
-    }
-    setAgenda((prev) => ({ ...prev, [dateStr]: [...normalizeDayEntries(prev[dateStr]), { id: Date.now(), label: outfit.name, itemIds: outfit.itemIds, outfitId: outfit.id }] }));
-    showToast({ text: `« ${outfit.name} » prévue`, sub: formatLongDate(dateStr).replace(/^./, (c) => c.toUpperCase()), action: "Voir", onAction: () => openDayInAgenda(dateStr) });
-    setPlanSheet(null);
-  }
-
-  // Toucher un jour dans la popup : on planifie tout de suite s'il n'y a rien ce jour-là, sinon on demande où.
-  function pickPlanDay(dateStr) {
-    if (!planSheet) return;
-    if (planSheet.kind === "outfit") {
-      const outfit = outfits.find((o) => o.id === planSheet.id);
-      if (outfit) planOutfitOn(dateStr, outfit);
-      return;
-    }
-    if (normalizeDayEntries(agenda[dateStr]).length === 0) planItemOn(dateStr, planSheet.id, "new");
-    else setPlanSheet((p) => ({ ...p, date: dateStr }));
-  }
-
   function addItemToEntry(dateStr, entryId, itemId) {
     setAgenda((prev) => ({
       ...prev,
@@ -4368,7 +4346,10 @@ export default function App() {
                     </div>
                     <div>
                       {(form.extraHexes || []).length > 0 && <span className="inline-flex align-middle mr-1.5">{renderPaletteDots(form.extraHexes, 18)}</span>}
-                      <input type="color" value={form.hex} onChange={(e) => setForm({ ...form, hex: e.target.value })} className="w-10 h-9 rounded cursor-pointer" style={{ border: `1px solid ${COLORS.line}` }} />
+                      <button type="button" onClick={() => setColorSheet({ target: "form", idx: -1, draft: form.hex })} aria-label="Changer la couleur" className="h-9 pl-1 pr-2.5 rounded-full inline-flex items-center gap-1.5 text-xs align-middle" style={{ border: `1px solid ${COLORS.line}`, fontWeight: 600 }}>
+                        <span style={{ width: 26, height: 26, borderRadius: 13, background: form.hex, border: "1px solid rgba(0,0,0,0.08)" }} />
+                        {hexToColorName(form.hex)}
+                      </button>
                     </div>
                     {/* Motif détecté sur la photo (touche pour corriger) */}
                     {form.photo && (typeof form.patternScore === "number" || typeof form.pattern === "boolean") && (
@@ -4715,12 +4696,40 @@ export default function App() {
           const cut = isCutout(it);
           const roundBtn = { width: 40, height: 40, borderRadius: 20, background: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
           const chipStyle = (active) => ({ background: active ? COLORS.ink : "transparent", color: active ? "white" : COLORS.ink, border: `1px solid ${active ? COLORS.ink : COLORS.line}` });
+          // Pièces voisines pour les flèches : celles de la tenue ouverte dessous, sinon la liste
+          // de la Garde-robe qu'on regardait, sinon toute la catégorie (rangée par couleur).
+          const navList = (() => {
+            const o = detailOutfitId && outfits.find((x) => x.id === detailOutfitId);
+            if (o && (o.itemIds || []).includes(it.id)) return itemsForOutfit(o);
+            if (view === "dressing" && categoryView && categoryItems.some((i) => i.id === it.id)) return categoryItems;
+            return sortItems(items.filter((i) => i.category === it.category), "couleur");
+          })();
+          const navPos = navList.findIndex((i) => i.id === it.id);
+          const prevIt = navPos > 0 ? navList[navPos - 1] : null;
+          const nextIt = navPos >= 0 && navPos < navList.length - 1 ? navList[navPos + 1] : null;
+          const goItem = (target, dir) => {
+            if (!target) return;
+            setItemMenuOpen(false);
+            setItemNavDir(dir);
+            setDetailItemId(target.id);
+          };
+          const navBtn = (target, dir) => (
+            <button
+              type="button"
+              onClick={() => goItem(target, dir)}
+              disabled={!target}
+              aria-label={dir === "prev" ? "Pièce précédente" : "Pièce suivante"}
+              style={{ ...roundBtn, width: 36, height: 36, borderRadius: 18, opacity: target ? 1 : 0.35 }}
+            >
+              <ChevronDown size={18} style={{ transform: `rotate(${dir === "prev" ? 90 : -90}deg)` }} />
+            </button>
+          );
           return (
           // La fiche s'ouvre PAR-DESSUS la liste (qui reste en place dessous) : elle démarre toujours en haut,
           // et en la fermant on retrouve la liste exactement là où on l'avait laissée.
           <div className="fixed inset-0 overflow-y-auto" style={{ zIndex: lastFiche === "item" ? 52 : 51, background: COLORS.ivory, overscrollBehavior: "contain", WebkitOverflowScrolling: "touch" }}>
             <div className="max-w-3xl mx-auto px-5 pt-10" style={{ paddingBottom: 120 }}>
-          <div key={detailItemId} className="slide-right">
+          <div key={detailItemId} className={itemNavDir === "prev" ? "slide-left" : "slide-right"}>
             {/* ── Panneau photo, gris clair, arrondi en bas ── */}
             <div className="-mx-5 -mt-10 px-5 pb-5 mb-4" style={{ background: COLORS.haze, borderRadius: "0 0 32px 32px", paddingTop: 44 }}>
               <div className="flex items-center justify-between">
@@ -4749,19 +4758,39 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex justify-center py-4">
-                {it.photo ? (
-                  <img
-                    src={it.photo}
-                    alt={it.name}
-                    style={cut
-                      ? { width: "100%", maxWidth: 300, height: 280, objectFit: "contain", display: "block", filter: "drop-shadow(0 8px 14px rgba(0,0,0,0.15))" }
-                      : { width: "100%", maxWidth: 300, aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 20, display: "block" }}
-                  />
-                ) : (
-                  <div style={{ width: "100%", maxWidth: 300, aspectRatio: "1 / 1", borderRadius: 20, background: it.hex }} />
-                )}
+              {/* Photo, avec les flèches pour passer à la pièce voisine (on peut aussi glisser la photo) */}
+              <div
+                className="flex items-center gap-2 py-4"
+                onTouchStart={(e) => { itemSwipe.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }; }}
+                onTouchEnd={(e) => {
+                  const start = itemSwipe.current;
+                  itemSwipe.current = null;
+                  if (!start) return;
+                  const dx = e.changedTouches[0].clientX - start.x;
+                  const dy = Math.abs(e.changedTouches[0].clientY - start.y);
+                  if (Math.abs(dx) < 60 || dy > 60) return;
+                  if (dx < 0) goItem(nextIt, "next"); else goItem(prevIt, "prev");
+                }}
+              >
+                {navList.length > 1 && navBtn(prevIt, "prev")}
+                <div className="flex-1 min-w-0 flex justify-center">
+                  {it.photo ? (
+                    <img
+                      src={it.photo}
+                      alt={it.name}
+                      style={cut
+                        ? { width: "100%", maxWidth: 300, height: 280, objectFit: "contain", display: "block", filter: "drop-shadow(0 8px 14px rgba(0,0,0,0.15))" }
+                        : { width: "100%", maxWidth: 300, aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 20, display: "block" }}
+                    />
+                  ) : (
+                    <div style={{ width: "100%", maxWidth: 300, aspectRatio: "1 / 1", borderRadius: 20, background: it.hex }} />
+                  )}
+                </div>
+                {navList.length > 1 && navBtn(nextIt, "next")}
               </div>
+              {navList.length > 1 && navPos >= 0 && (
+                <p className="text-center -mt-2 mb-3" style={{ fontSize: 12, color: COLORS.muted }}>{navPos + 1} / {navList.length}</p>
+              )}
 
               {/* Recadrer et changer la photo, puis le bouton principal : je le porte aujourd'hui */}
               <div className="flex items-center gap-2">
@@ -4786,35 +4815,9 @@ export default function App() {
                     <Camera size={18} />
                     <input type="file" accept="image/*" onChange={(e) => handlePhotoChange(e, it.id)} className="hidden" />
                   </label>
-                  {/* Planifier cette pièce un autre jour */}
-                  <button
-                    type="button"
-                    aria-label="Planifier cette pièce"
-                    title="Planifier"
-                    onClick={() => setPlanSheet({ kind: "item", id: it.id, month: new Date(), date: null })}
-                    style={{ ...roundBtn, width: 50, height: 50, borderRadius: 25, marginLeft: "auto" }}
-                  >
-                    <Calendar size={18} />
-                  </button>
-                  {/* Porté aujourd'hui : un simple bouton rond. Blanc = pas encore porté ; corail = porté. Toucher à nouveau annule. */}
-                  <button
-                    type="button"
-                    aria-label={wornToday ? "Porté aujourd'hui (toucher pour annuler)" : "Je le porte aujourd'hui"}
-                    aria-pressed={wornToday}
-                    title={wornToday ? "Porté aujourd'hui" : "Je le porte aujourd'hui"}
-                    onClick={() => wearItemToday(it)}
-                    style={{
-                      ...roundBtn,
-                      width: 50,
-                      height: 50,
-                      borderRadius: 25,
-                      background: wornToday ? COLORS.rose : "#FFFFFF",
-                      boxShadow: wornToday ? "0 6px 16px rgba(255,75,51,0.3)" : "none",
-                      transition: "background 0.2s, box-shadow 0.2s",
-                    }}
-                  >
-                    {wornToday ? <Check size={20} color="#FFFFFF" strokeWidth={3} /> : <Sun size={19} />}
-                  </button>
+              <div className="flex-1 min-w-0">
+                {renderWearState({ done: wornToday, onDo: () => wearItemToday(it), onUndo: () => wearItemToday(it), fem: false })}
+              </div>
               </div>
             </div>
 
@@ -4874,25 +4877,24 @@ export default function App() {
                   <p className="mb-3" style={{ fontSize: 15, fontWeight: 600 }}>Couleurs</p>
                   <div className="flex flex-wrap gap-2">
                     {/* Couleur principale : touche la pastille pour la changer */}
-                    <label className="inline-flex items-center gap-2 h-9 pl-1.5 pr-3 rounded-full text-sm cursor-pointer" style={{ background: COLORS.haze }}>
+                    <button type="button" onClick={() => setColorSheet({ target: "item", itemId: it.id, idx: -1, draft: it.hex })} className="inline-flex items-center gap-2 h-9 pl-1.5 pr-3 rounded-full text-sm" style={{ background: COLORS.haze }}>
                       <span style={{ width: 24, height: 24, borderRadius: 12, background: it.hex, border: "1px solid rgba(0,0,0,0.08)" }} />
                       {hexToColorName(it.hex)}
-                      <input type="color" value={it.hex} onChange={(e) => update({ hex: e.target.value })} className="hidden" />
-                    </label>
+                      <Pencil size={12} color={COLORS.muted} />
+                    </button>
                     {(it.extraHexes || []).map((hex, idx) => (
                       <span key={idx} className="inline-flex items-center gap-2 h-9 pl-1.5 pr-2 rounded-full text-sm" style={{ background: COLORS.haze }}>
-                        <label className="inline-flex items-center gap-2 cursor-pointer">
+                        <button type="button" onClick={() => setColorSheet({ target: "item", itemId: it.id, idx, draft: hex })} className="inline-flex items-center gap-2">
                           <span style={{ width: 24, height: 24, borderRadius: 12, background: hex, border: "1px solid rgba(0,0,0,0.08)" }} />
                           {hexToColorName(hex)}
-                          <input type="color" value={hex} onChange={(e) => update((i) => ({ extraHexes: (i.extraHexes || []).map((h, k) => (k === idx ? e.target.value : h)) }))} className="hidden" />
-                        </label>
+                        </button>
                         <button type="button" onClick={() => update((i) => ({ extraHexes: (i.extraHexes || []).filter((_, k) => k !== idx) }))} aria-label="Retirer cette couleur" className="w-6 h-6 flex items-center justify-center">
                           <X size={13} />
                         </button>
                       </span>
                     ))}
                     {(it.extraHexes || []).length < 2 && (
-                      <button type="button" onClick={() => update((i) => ({ extraHexes: [...(i.extraHexes || []), "#cccccc"] }))} aria-label="Ajouter une couleur" className="w-9 h-9 rounded-full flex items-center justify-center" style={{ border: `1.5px dashed ${COLORS.line}`, color: COLORS.muted }}>
+                      <button type="button" onClick={() => setColorSheet({ target: "item", itemId: it.id, idx: "new", draft: null })} aria-label="Ajouter une couleur" className="w-9 h-9 rounded-full flex items-center justify-center" style={{ border: `1.5px dashed ${COLORS.line}`, color: COLORS.muted }}>
                         <Plus size={15} />
                       </button>
                     )}
@@ -5048,10 +5050,37 @@ export default function App() {
               const updateOutfit = (fn) => setOutfits((prev) => prev.map((o) => (o.id === outfit.id ? { ...o, ...fn(o) } : o)));
               const roundBtn = { width: 40, height: 40, borderRadius: 20, background: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
               const chipStyle = (active) => ({ background: active ? COLORS.ink : "transparent", color: active ? "white" : COLORS.ink, border: `1px solid ${active ? COLORS.ink : COLORS.line}` });
+              // Tenues voisines pour les flèches : la liste (filtrée) de la page Tenues si on en vient,
+              // sinon les tenues de la pièce ouverte dessous, sinon toutes les tenues (plus récentes d'abord).
+              const oNavList = (() => {
+                if (view === "tenues" && filteredOutfits.some((o) => o.id === outfit.id)) return filteredOutfits;
+                if (detailItemId && (outfit.itemIds || []).includes(detailItemId)) return outfitsByRecent.filter((o) => (o.itemIds || []).includes(detailItemId));
+                return outfitsByRecent;
+              })();
+              const oPos = oNavList.findIndex((o) => o.id === outfit.id);
+              const prevO = oPos > 0 ? oNavList[oPos - 1] : null;
+              const nextO = oPos >= 0 && oPos < oNavList.length - 1 ? oNavList[oPos + 1] : null;
+              const goOutfit = (target, dir) => {
+                if (!target) return;
+                setOutfitMenuOpen(false);
+                setOutfitNavDir(dir);
+                setDetailOutfitId(target.id);
+              };
+              const oNavBtn = (target, dir) => (
+                <button
+                  type="button"
+                  onClick={() => goOutfit(target, dir)}
+                  disabled={!target}
+                  aria-label={dir === "prev" ? "Tenue précédente" : "Tenue suivante"}
+                  style={{ ...roundBtn, width: 36, height: 36, borderRadius: 18, opacity: target ? 1 : 0.35 }}
+                >
+                  <ChevronDown size={18} style={{ transform: `rotate(${dir === "prev" ? 90 : -90}deg)` }} />
+                </button>
+              );
               return (
                 <div className="fixed inset-0 overflow-y-auto" style={{ zIndex: lastFiche === "outfit" ? 52 : 51, background: COLORS.ivory, overscrollBehavior: "contain", WebkitOverflowScrolling: "touch" }}>
                 <div className="max-w-3xl mx-auto px-5 pt-10" style={{ paddingBottom: 120 }}>
-                <div className="slide-right">
+                <div key={detailOutfitId} className={outfitNavDir === "prev" ? "slide-left" : "slide-right"}>
                   {/* ── Panneau : la tenue en flat lay ── */}
                   <div className="-mx-5 -mt-10 px-5 pb-5 mb-4" style={{ background: COLORS.haze, borderRadius: "0 0 32px 32px", paddingTop: 44 }}>
                     <div className="flex items-center justify-between mb-4">
@@ -5075,44 +5104,38 @@ export default function App() {
                       </div>
                     </div>
 
-                    {pieces.length > 0 ? renderFlatLay(pieces, 300) : (
-                      <div className="flex items-center justify-center text-sm" style={{ height: 200, borderRadius: 18, background: "#FFFFFF", color: COLORS.muted }}>Aucune pièce</div>
+                    {/* Flat lay, avec les flèches pour passer à la tenue voisine (on peut aussi glisser) */}
+                    <div
+                      className="flex items-center gap-2"
+                      onTouchStart={(e) => { outfitSwipe.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }; }}
+                      onTouchEnd={(e) => {
+                        const start = outfitSwipe.current;
+                        outfitSwipe.current = null;
+                        if (!start) return;
+                        const dx = e.changedTouches[0].clientX - start.x;
+                        const dy = Math.abs(e.changedTouches[0].clientY - start.y);
+                        if (Math.abs(dx) < 60 || dy > 60) return;
+                        if (dx < 0) goOutfit(nextO, "next"); else goOutfit(prevO, "prev");
+                      }}
+                    >
+                      {oNavList.length > 1 && oNavBtn(prevO, "prev")}
+                      <div className="flex-1 min-w-0">
+                        {pieces.length > 0 ? renderFlatLay(pieces, 300) : (
+                          <div className="flex items-center justify-center text-sm" style={{ height: 200, borderRadius: 18, background: "#FFFFFF", color: COLORS.muted }}>Aucune pièce</div>
+                        )}
+                      </div>
+                      {oNavList.length > 1 && oNavBtn(nextO, "next")}
+                    </div>
+                    {oNavList.length > 1 && oPos >= 0 && (
+                      <p className="text-center mt-2" style={{ fontSize: 12, color: COLORS.muted }}>{oPos + 1} / {oNavList.length}</p>
                     )}
 
-                    {/* Portée aujourd'hui : bouton rond calé à droite. Blanc = pas encore ; corail = portée. Toucher à nouveau annule. */}
-                    <div className="flex justify-end gap-2 mt-4">
-                      {/* Planifier cette tenue un autre jour */}
-                      <button
-                        type="button"
-                        aria-label="Planifier cette tenue"
-                        title="Planifier"
-                        onClick={() => setPlanSheet({ kind: "outfit", id: outfit.id, month: new Date(), date: null })}
-                        style={{ ...roundBtn, width: 50, height: 50, borderRadius: 25 }}
-                      >
-                        <Calendar size={18} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={validated ? "Portée aujourd'hui (toucher pour annuler)" : "Je la porte aujourd'hui"}
-                        aria-pressed={validated}
-                        title={validated ? "Portée aujourd'hui" : "Je la porte aujourd'hui"}
-                        onClick={() => {
-                          if (validated) { unmarkOutfitWorn(outfit); showToast({ text: "Plus comptée comme portée aujourd'hui" }); }
-                          else { markOutfitWorn(outfit); showToast({ text: "Portée aujourd'hui", sub: "Ajoutée à ta page Aujourd'hui" }); }
-                        }}
-                        style={{
-                          ...roundBtn,
-                          width: 50,
-                          height: 50,
-                          borderRadius: 25,
-                          background: validated ? COLORS.rose : "#FFFFFF",
-                          boxShadow: validated ? "0 6px 16px rgba(255,75,51,0.3)" : "none",
-                          transition: "background 0.2s, box-shadow 0.2s",
-                        }}
-                      >
-                        {validated ? <Check size={20} color="#FFFFFF" strokeWidth={3} /> : <Sun size={19} />}
-                      </button>
-                    </div>
+                    {renderWearState({
+                      done: validated,
+                      onDo: () => { markOutfitWorn(outfit); showToast({ text: "Portée aujourd'hui", sub: "Ajoutée à ta page Aujourd'hui" }); },
+                      onUndo: () => { unmarkOutfitWorn(outfit); showToast({ text: "Plus comptée comme portée aujourd'hui" }); },
+                      className: "mt-4",
+                    })}
                   </div>
 
                   {/* Nom (modifiable) */}
@@ -5278,6 +5301,106 @@ export default function App() {
             })()}
 
             {/* ── Pièces d'une tenue prévue : ajouter (ex. des chaussures oubliées) ou retirer, pour ce jour seulement ── */}
+            {/* ── Choisir une couleur à la main : pipette sur la photo, nuancier, ou autre nuance ── */}
+            {colorSheet && (() => {
+              const cs = colorSheet;
+              const target = cs.target === "item" ? items.find((i) => i.id === cs.itemId) : form;
+              if (!target) return null;
+              const photo = target.photo;
+              const apply = () => {
+                const hex = cs.draft;
+                if (!hex) return;
+                const patch = (o) => {
+                  if (cs.idx === -1) return { hex };
+                  const extras = [...(o.extraHexes || [])];
+                  if (cs.idx === "new") extras.push(hex); else extras[cs.idx] = hex;
+                  return { extraHexes: extras };
+                };
+                if (cs.target === "item") setItems((prev) => prev.map((i) => (i.id === cs.itemId ? { ...i, ...patch(i) } : i)));
+                else setForm((f) => ({ ...f, ...patch(f) }));
+                setColorSheet(null);
+              };
+              const pick = (hex, mark = null) => setColorSheet((c) => ({ ...c, draft: hex, mark }));
+              return (
+                <div onClick={() => setColorSheet(null)} className="fixed inset-0 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.4)", zIndex: 57 }}>
+                  <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
+                    <div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                    <div className="flex items-center justify-between mb-4">
+                      <p className="display" style={{ fontWeight: 700, fontSize: 18 }}>{cs.idx === -1 ? "Couleur principale" : cs.idx === "new" ? "Ajouter une couleur" : "Couleur secondaire"}</p>
+                      <button onClick={() => setColorSheet(null)} aria-label="Fermer" className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                        <X size={14} />
+                      </button>
+                    </div>
+
+                    {photo && (
+                      <div className="mb-5">
+                        <p className="text-xs mb-2" style={{ color: COLORS.muted }}>Touche la photo à l'endroit de la bonne couleur</p>
+                        <div className="flex justify-center rounded-2xl p-2" style={{ background: COLORS.haze }}>
+                          <div className="relative inline-block">
+                            <img
+                              src={photo}
+                              alt="Photo du vêtement"
+                              crossOrigin="anonymous"
+                              onClick={async (e) => {
+                                const r = e.currentTarget.getBoundingClientRect();
+                                const fx = (e.clientX - r.left) / r.width;
+                                const fy = (e.clientY - r.top) / r.height;
+                                try {
+                                  const hex = await samplePhotoColor(photo, fx, fy);
+                                  if (hex) pick(hex, { fx, fy });
+                                } catch (err) {
+                                  alert("La photo n'a pas pu être lue. Choisis dans le nuancier.");
+                                }
+                              }}
+                              style={{ display: "block", maxWidth: "100%", maxHeight: 240, borderRadius: 12, cursor: "crosshair" }}
+                            />
+                            {cs.mark && (
+                              <span className="absolute pointer-events-none" style={{ left: `${cs.mark.fx * 100}%`, top: `${cs.mark.fy * 100}%`, width: 28, height: 28, marginLeft: -14, marginTop: -14, borderRadius: 14, background: cs.draft, border: "3px solid #FFFFFF", boxShadow: "0 2px 8px rgba(0,0,0,0.35)" }} />
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <p className="text-xs mb-2" style={{ color: COLORS.muted }}>{photo ? "Ou choisis dans le nuancier" : "Choisis dans le nuancier"}</p>
+                    <div className="grid grid-cols-5 gap-x-2 gap-y-3 mb-4">
+                      {COLOR_SWATCHES.map(([name, hex]) => {
+                        const on = cs.draft && cs.draft.toLowerCase() === hex.toLowerCase();
+                        return (
+                          <button key={hex} type="button" onClick={() => pick(hex)} className="flex flex-col items-center gap-1">
+                            <span className="flex items-center justify-center" style={{ width: 40, height: 40, borderRadius: 20, background: hex, border: "1px solid rgba(0,0,0,0.1)", boxShadow: on ? `0 0 0 2px #FFFFFF, 0 0 0 4px ${COLORS.ink}` : "none" }}>
+                              {on && <Check size={16} color={hexToHsl(hex).l > 0.6 ? COLORS.ink : "#FFFFFF"} strokeWidth={3} />}
+                            </span>
+                            <span className="text-center leading-tight" style={{ fontSize: 10, color: COLORS.muted }}>{name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Autre nuance : le sélecteur du téléphone (l'input reste visible mais transparent, sinon l'iPhone ne l'ouvre pas) */}
+                    <div className="relative mb-5">
+                      <div className="h-11 rounded-full flex items-center justify-center gap-2 text-sm" style={{ border: `1px solid ${COLORS.line}`, fontWeight: 600 }}>
+                        <span style={{ width: 18, height: 18, borderRadius: 9, background: "conic-gradient(#e74c3c, #f1c40f, #2ecc71, #3498db, #9b59b6, #e74c3c)" }} />
+                        Autre nuance…
+                      </div>
+                      <input type="color" value={cs.draft || "#cccccc"} onChange={(e) => pick(e.target.value)} aria-label="Autre nuance" className="absolute inset-0 w-full h-full cursor-pointer" style={{ opacity: 0 }} />
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={apply}
+                      disabled={!cs.draft}
+                      className="w-full h-12 rounded-full flex items-center justify-center gap-2.5 text-sm"
+                      style={{ background: cs.draft ? COLORS.rose : COLORS.haze, color: cs.draft ? "#FFFFFF" : COLORS.muted, fontWeight: 700 }}
+                    >
+                      {cs.draft && <span style={{ width: 22, height: 22, borderRadius: 11, background: cs.draft, border: "2px solid #FFFFFF" }} />}
+                      {cs.draft ? `Choisir ${hexToColorName(cs.draft).toLowerCase()}` : "Choisis une couleur"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+
             {entryPicker && (() => {
               const e = normalizeDayEntries(agenda[entryPicker.dateStr]).find((x) => x.id === entryPicker.entryId);
               if (!e) return null;
@@ -6123,162 +6246,6 @@ export default function App() {
               </div>
             )}
       </div>
-
-      {/* ── Popup « Planifier » : calendrier, puis (si besoin) à quelle tenue ajouter la pièce ── */}
-      {planSheet && (() => {
-        const subject = planSheet.kind === "item" ? items.find((i) => i.id === planSheet.id) : outfits.find((o) => o.id === planSheet.id);
-        if (!subject) return null;
-        const close = () => setPlanSheet(null);
-        const m = planSheet.month;
-        const todayK = todayKey();
-        const dayList = planSheet.date ? normalizeDayEntries(agenda[planSheet.date]) : [];
-        const entryItems = (e) => e.itemIds.map((id) => items.find((i) => i.id === id)).filter(Boolean);
-        return (
-          <div onClick={close} className="fixed inset-0 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.4)", zIndex: 56 }}>
-            <div onClick={(ev) => ev.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
-              <div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
-
-              {!planSheet.date ? (
-                <>
-                  <div className="flex items-center justify-between mb-1">
-                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Planifier</p>
-                    <button onClick={close} aria-label="Fermer" className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
-                      <X size={14} />
-                    </button>
-                  </div>
-                  <p className="text-xs mb-4" style={{ color: COLORS.muted }}>Choisis le jour où tu veux porter « {subject.name} ».</p>
-
-                  <div className="p-4 rounded-2xl" style={{ background: COLORS.haze }}>
-                    <div className="flex items-center justify-between mb-2">
-                      <button
-                        type="button"
-                        aria-label="Mois précédent"
-                        onClick={() => setPlanSheet((p) => ({ ...p, month: new Date(p.month.getFullYear(), p.month.getMonth() - 1, 1) }))}
-                        className="w-8 h-8 rounded-full flex items-center justify-center"
-                        style={{ background: COLORS.ivory }}
-                      >
-                        <ArrowLeft size={14} />
-                      </button>
-                      <p className="display text-sm" style={{ fontWeight: 700, textTransform: "capitalize" }}>
-                        {m.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
-                      </p>
-                      <button
-                        type="button"
-                        aria-label="Mois suivant"
-                        onClick={() => setPlanSheet((p) => ({ ...p, month: new Date(p.month.getFullYear(), p.month.getMonth() + 1, 1) }))}
-                        className="w-8 h-8 rounded-full flex items-center justify-center"
-                        style={{ background: COLORS.ivory }}
-                      >
-                        <ArrowLeft size={14} style={{ transform: "rotate(180deg)" }} />
-                      </button>
-                    </div>
-                    <div className="grid grid-cols-7 gap-1 mb-1">
-                      {["L", "M", "M", "J", "V", "S", "D"].map((d, i) => (
-                        <p key={i} className="text-center text-[10px]" style={{ opacity: 0.4 }}>{d}</p>
-                      ))}
-                    </div>
-                    <div className="grid grid-cols-7 gap-1">
-                      {buildCalendarCells(m).map((day, i) => {
-                        if (day === null) return <div key={i} />;
-                        const dateKey = toDateKey(m.getFullYear(), m.getMonth(), day);
-                        const past = dateKey < todayK;
-                        const dayEntries = agendaEntries.filter((e) => e.dateStr === dateKey);
-                        const hasEntries = dayEntries.length > 0;
-                        const dayPal = entriesPalette(dayEntries, 3);
-                        const isToday = dateKey === todayK;
-                        return (
-                          <button
-                            key={i}
-                            type="button"
-                            disabled={past}
-                            onClick={() => pickPlanDay(dateKey)}
-                            className="aspect-square rounded-lg flex flex-col items-center justify-center relative text-xs"
-                            style={{
-                              background: isToday ? COLORS.ink : hasEntries ? "#FFFFFF" : "transparent",
-                              color: isToday ? "white" : COLORS.ink,
-                              fontWeight: hasEntries || isToday ? 700 : 400,
-                              opacity: past ? 0.25 : 1,
-                            }}
-                          >
-                            <span style={{ marginTop: hasEntries ? -6 : 0 }}>{day}</span>
-                            {hasEntries && (
-                              <span className="absolute flex" style={{ bottom: 4, paddingLeft: 3 }}>
-                                {(dayPal.length ? dayPal : [COLORS.rose]).map((hex) => (
-                                  <span key={hex} style={{ width: 7, height: 7, borderRadius: 4, background: hex, marginLeft: -3, boxShadow: `0 0 0 1px ${isToday ? COLORS.ink : "#FFFFFF"}` }} />
-                                ))}
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="flex items-center justify-between mb-1 gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      {!planSheet.wear && (
-                        <button type="button" aria-label="Changer de jour" onClick={() => setPlanSheet((p) => ({ ...p, date: null }))} className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze }}>
-                          <ArrowLeft size={14} />
-                        </button>
-                      )}
-                      <p className="display truncate" style={{ fontWeight: 700, fontSize: 19 }}>
-                        {formatLongDate(planSheet.date).replace(/^le /, "").replace(/^./, (c) => c.toUpperCase())}
-                      </p>
-                    </div>
-                    <button onClick={close} aria-label="Fermer" className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze }}>
-                      <X size={14} />
-                    </button>
-                  </div>
-                  <p className="text-xs mb-4" style={{ color: COLORS.muted }}>
-                    {planSheet.wear ? "Tu as plusieurs tenues prévues : avec laquelle tu portes « " + subject.name + " » ?" : "À quelle tenue ajouter « " + subject.name + " » ?"}
-                  </p>
-                  <div className="flex flex-col gap-2">
-                    {dayList.map((e) => {
-                      const pieces = entryItems(e);
-                      const already = e.itemIds.includes(subject.id);
-                      return (
-                        <button
-                          key={e.id}
-                          type="button"
-                          disabled={already}
-                          onClick={() => (planSheet.wear ? (wearItemToday(subject, e.id), setPlanSheet(null)) : planItemOn(planSheet.date, subject.id, e.id))}
-                          className="w-full flex items-center gap-3 p-2 pr-3 rounded-2xl text-left"
-                          style={{ background: COLORS.haze, opacity: already ? 0.5 : 1 }}
-                        >
-                          <span className="flex flex-shrink-0" style={{ paddingLeft: 10 }}>
-                            {pieces.slice(0, 3).map((p) => (
-                              <span key={p.id} className="rounded-xl overflow-hidden flex items-center justify-center" style={{ width: 40, height: 40, marginLeft: -10, background: "#FFFFFF", boxShadow: `0 0 0 2px ${COLORS.haze}` }}>
-                                {p.photo ? <img src={p.photo} alt="" className="w-full h-full object-cover" /> : <Shirt size={16} color={COLORS.muted} />}
-                              </span>
-                            ))}
-                          </span>
-                          <span className="flex-1 min-w-0">
-                            <span className="block text-sm truncate" style={{ fontWeight: 700 }}>{entryDisplayName(planSheet.date, e)}</span>
-                            <span className="block text-xs" style={{ color: COLORS.muted }}>
-                              {already ? "Déjà dedans" : `${pieces.length} pièce${pieces.length > 1 ? "s" : ""}`}
-                            </span>
-                          </span>
-                          {!already && <Plus size={18} color={COLORS.rose} strokeWidth={2.5} />}
-                        </button>
-                      );
-                    })}
-                    <button
-                      type="button"
-                      onClick={() => (planSheet.wear ? (wearItemToday(subject, "new"), setPlanSheet(null)) : planItemOn(planSheet.date, subject.id, "new"))}
-                      className="w-full h-12 rounded-full flex items-center justify-center gap-1.5 text-sm mt-2"
-                      style={{ border: `1.5px dashed ${COLORS.line}`, fontWeight: 700 }}
-                    >
-                      <Plus size={16} /> Nouvelle tenue
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        );
-      })()}
 
       {/* ── Petit message de confirmation ── */}
       {toast && (
