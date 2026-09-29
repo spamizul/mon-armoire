@@ -2028,7 +2028,8 @@ export default function App() {
   // La météo suit : celle d'aujourd'hui, la prévision de demain, ou à choisir soi-même pour un autre jour.
   function setWizardDate(d) {
     setWizardTargetDate(d);
-    const dayWeather = d === tomorrowKey() ? (weather && weather.tomorrow) || null : !d || d === todayKey() ? weather : null;
+    // Au-delà de demain : la prévision du jour (jusqu'à ~15 jours), sinon on choisit soi-même.
+    const dayWeather = !d || d === todayKey() ? weather : d === tomorrowKey() ? (weather && weather.tomorrow) || null : (weather && weather.days && weather.days[d]) || null;
     setWizardLocalWeather(dayWeather);
     setWizardUseLocalWeather(!!dayWeather);
     setWizardWeather(dayWeather);
@@ -2055,11 +2056,13 @@ export default function App() {
     setWizardBaseIds(baseItemId ? [baseItemId] : []); // pas de pièce de départ restée d'une fois sur l'autre (sauf si on en impose une)
     setWizardPieceCat(null);
     setWizardPicker(false);
-    // Tenue prévue pour demain → on prend la prévision de demain.
-    const dayWeather = targetDate && targetDate === tomorrowKey() && weather && weather.tomorrow ? weather.tomorrow : weather;
+    // Tenue prévue pour un autre jour → on prend la prévision de ce jour-là (si on l'a).
+    const dayWeather = !targetDate || targetDate === todayKey() ? weather
+      : targetDate === tomorrowKey() ? (weather && weather.tomorrow) || null
+      : (weather && weather.days && weather.days[targetDate]) || null;
     setWizardWeather(dayWeather);
     setWizardLocalWeather(dayWeather);
-    setWizardUseLocalWeather(true);
+    setWizardUseLocalWeather(!!dayWeather);
     const autoTag = weatherToTag(dayWeather);
     setCurrentWeather(autoTag || null);
     setWizardShowResult(false);
@@ -2572,7 +2575,7 @@ export default function App() {
   async function fetchWeatherAt(latitude, longitude) {
         try {
           const res = await fetch(
-            `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code,precipitation_probability&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&forecast_days=3&timezone=auto`
+            `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code,precipitation_probability&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&forecast_days=16&timezone=auto`
           );
           const data = await res.json();
           // Matin / midi / soir : températures prévues à 9 h, 13 h et 19 h aujourd'hui.
@@ -2600,6 +2603,14 @@ export default function App() {
             // Prévision pour toute la journée : risque de pluie (%) et temps dominant.
             rainChance: data.daily.precipitation_probability_max ? data.daily.precipitation_probability_max[0] : null,
             dailyCode: data.daily.weather_code ? data.daily.weather_code[0] : null,
+            // Prévisions jour par jour sur 16 jours (clé "AAAA-MM-JJ"), pour planifier plus loin.
+            days: Object.fromEntries((data.daily.time || []).map((d, k) => [d, {
+              min: Math.round(data.daily.temperature_2m_min[k]),
+              max: Math.round(data.daily.temperature_2m_max[k]),
+              code: data.daily.weather_code ? data.daily.weather_code[k] : null,
+              dailyCode: data.daily.weather_code ? data.daily.weather_code[k] : null,
+              rainChance: data.daily.precipitation_probability_max ? data.daily.precipitation_probability_max[k] : null,
+            }])),
             // Prévision de demain (même forme, pour la page Aujourd'hui et le générateur).
             tomorrow: data.daily.temperature_2m_max.length > 1 ? {
               min: Math.round(data.daily.temperature_2m_min[1]),
@@ -6497,7 +6508,7 @@ export default function App() {
                               <Sun size={13} className="flex-shrink-0" />
                               <span className="truncate">
                                 {wizardUseLocalWeather
-                                  ? `${wizardTargetDate === tomorrowKey() ? "Demain · " : ""}${weatherToTag(wizardLocalWeather)} · ${wizardLocalWeather.min}° / ${wizardLocalWeather.max}°${wizardLocalWeather.rainChance != null && wizardLocalWeather.rainChance >= 30 ? ` · pluie ${wizardLocalWeather.rainChance} %` : ""}`
+                                  ? `${wizardTargetDate === tomorrowKey() ? "Demain · " : wizardTargetDate && wizardTargetDate !== todayKey() ? `${formatAgendaDate(wizardTargetDate)} · ` : ""}${weatherToTag(wizardLocalWeather)} · ${wizardLocalWeather.min}° / ${wizardLocalWeather.max}°${wizardLocalWeather.rainChance != null && wizardLocalWeather.rainChance >= 30 ? ` · pluie ${wizardLocalWeather.rainChance} %` : ""}`
                                   : "Météo d'ici non prise en compte"}
                               </span>
                             </p>
