@@ -2405,7 +2405,10 @@ export default function App() {
   // ── Page Tenues : rangées automatiques selon la météo ──
   const WEATHER_ROW_TITLES = { Chaud: "Pour le chaud", Doux: "Pour les jours doux", Frais: "Pour le frais", Froid: "Pour le froid" };
   const outfitsByRecent = [...outfits].sort((a, b) => b.id - a.id);
-  const todayOutfitTag = weatherToTag(weather); // "Doux", "Frais"… ou null si météo inconnue
+  // "Parfaites pour…" : la journée jusqu'à 18 h, puis le lendemain (comme l'accueil le soir).
+  const picksForTomorrow = new Date().getHours() >= 18 && !!(weather && weather.tomorrow);
+  const picksWeather = picksForTomorrow ? weather.tomorrow : weather;
+  const todayOutfitTag = weatherToTag(picksWeather); // "Doux", "Frais"… ou null si météo inconnue
   const outfitGroups = [
     ...WEATHER_TAGS.map((w) => ({ key: w, title: WEATHER_ROW_TITLES[w] || w, list: outfitsByRecent.filter((o) => (o.weather || []).includes(w)) })),
     // En dernier, toutes les tenues (y compris celles sans tag météo).
@@ -4384,9 +4387,9 @@ export default function App() {
                       className="w-full flex items-center justify-between gap-3 p-4 text-left"
                     >
                       <span className="min-w-0">
-                        <span className="display block" style={{ fontWeight: 700, fontSize: 16 }}>Parfaites pour aujourd'hui</span>
+                        <span className="display block" style={{ fontWeight: 700, fontSize: 16 }}>Parfaites pour {picksForTomorrow ? "demain" : "aujourd'hui"}</span>
                         <span className="text-xs" style={{ color: COLORS.muted }}>
-                          {todayOutfitTag} · {weather.min}° / {weather.max}° · {todayOutfits.length} tenue{todayOutfits.length > 1 ? "s" : ""}
+                          {todayOutfitTag} · {picksWeather.min}° / {picksWeather.max}° · {todayOutfits.length} tenue{todayOutfits.length > 1 ? "s" : ""}
                         </span>
                       </span>
                       <ChevronDown size={20} style={{ flexShrink: 0, transition: "transform 0.2s", transform: todayPicksOpen ? "rotate(180deg)" : "none" }} />
