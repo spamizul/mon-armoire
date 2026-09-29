@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Plus, X, Pencil, Lock, Unlock, ChevronDown, Shirt, Layers, Sparkles, Camera, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Settings, Scissors, Check, Crop, MoreVertical, Cloud, CloudOff, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
 import Cropper from "react-easy-crop";
 import { supabase } from "./supabaseClient";
@@ -751,6 +751,8 @@ export default function App() {
 
   // Idées de tenues gardées dans le jeu "Oui ou non ?" ({ id, itemIds }).
   const [ideas, setIdeas] = useState([]);
+  // Tes goûts, appris du jeu "Oui ou non ?" : scores des duos de pièces et des duos de couleurs.
+  const [taste, setTaste] = useState({ pairs: {}, colors: {} });
 
   // ── CHARGEMENT / SAUVEGARDE (localStorage) ──
   useEffect(() => {
@@ -761,6 +763,7 @@ export default function App() {
     const savedAgenda = localStorage.getItem("mon-armoire-agenda");
     setAgenda(savedAgenda ? JSON.parse(savedAgenda) : {});
     try { const savedIdeas = localStorage.getItem("mon-armoire-ideas"); if (savedIdeas) setIdeas(JSON.parse(savedIdeas)); } catch {}
+    try { const savedTaste = localStorage.getItem("mon-armoire-taste"); if (savedTaste) setTaste(JSON.parse(savedTaste)); } catch {}
     const savedName = localStorage.getItem("mon-armoire-username");
     if (savedName) setUserName(savedName);
     setLoaded(true);
@@ -803,6 +806,11 @@ export default function App() {
     try { localStorage.setItem("mon-armoire-ideas", JSON.stringify(ideas)); } catch {}
   }, [ideas, loaded]);
 
+  useEffect(() => {
+    if (!loaded) return;
+    try { localStorage.setItem("mon-armoire-taste", JSON.stringify(taste)); } catch {}
+  }, [taste, loaded]);
+
   // ── SYNCHRO EN LIGNE (Supabase) ──────────────
   // Principe : ce téléphone garde TOUJOURS sa copie (localStorage), l'appli marche hors ligne.
   // Chaque changement est envoyé en ligne ~1,5 s après. À l'ouverture (et quand on revient
@@ -829,11 +837,12 @@ export default function App() {
       rediscoverHidden: src.rediscoverHidden || {},
       // Seulement s'il y en a : les données déjà synchronisées gardent la même empreinte.
       ...(src.ideas && src.ideas.length ? { ideas: src.ideas } : {}),
+      ...(src.taste && Object.keys(src.taste.pairs || {}).length ? { taste: src.taste } : {}),
     };
   }
   const payloadHash = (p) => hashString(stableStringify(p));
   const latestPayloadRef = useRef(null);
-  latestPayloadRef.current = syncPayload({ items, outfits, agenda, userName, rediscoverHidden, ideas });
+  latestPayloadRef.current = syncPayload({ items, outfits, agenda, userName, rediscoverHidden, ideas, taste });
 
   function markSynced(at, hash) {
     syncedAtRef.current = at;
@@ -858,6 +867,7 @@ export default function App() {
     setAgenda(p.agenda);
     setRediscoverHidden(p.rediscoverHidden);
     setIdeas(p.ideas || []);
+    setTaste(p.taste || { pairs: {}, colors: {} });
     try { localStorage.setItem("mon-armoire-rediscover-hidden", JSON.stringify(p.rediscoverHidden)); } catch {}
     if (p.userName) {
       try { localStorage.setItem("mon-armoire-username", p.userName); } catch {}
@@ -964,7 +974,7 @@ export default function App() {
     setSyncStatus("pending");
     clearTimeout(pushTimer.current);
     pushTimer.current = setTimeout(pushNow, 1500);
-  }, [items, outfits, agenda, userName, rediscoverHidden, ideas, loaded, syncCode]);
+  }, [items, outfits, agenda, userName, rediscoverHidden, ideas, taste, loaded, syncCode]);
 
   // À l'ouverture, au retour sur l'appli et au retour du réseau : on vérifie en ligne.
   useEffect(() => {
@@ -1781,6 +1791,47 @@ export default function App() {
   const swipeStart = useRef(null);
   const swipeSeen = useRef(new Set());
 
+  // ── Ce que pli apprend de tes goûts ──
+  const pairKey = (a, b) => (String(a) < String(b) ? `${a}|${b}` : `${b}|${a}`);
+  // Oui (+1) ou non (-1) à une tenue : chaque duo de pièces, et chaque duo de couleurs, gagne ou perd un point.
+  function recordTaste(ids, delta) {
+    const list = ids.map((id) => items.find((i) => i.id === id)).filter(Boolean);
+    setTaste((prev) => {
+      const pairs = { ...(prev.pairs || {}) };
+      const colors = { ...(prev.colors || {}) };
+      const seenColor = new Set();
+      for (let x = 0; x < list.length; x++) {
+        for (let y = x + 1; y < list.length; y++) {
+          const k = pairKey(list[x].id, list[y].id);
+          pairs[k] = (pairs[k] || 0) + delta;
+          const ck = pairKey(hexToColorName(list[x].hex), hexToColorName(list[y].hex));
+          if (!seenColor.has(ck)) { seenColor.add(ck); colors[ck] = (colors[ck] || 0) + delta; }
+        }
+      }
+      return { pairs, colors };
+    });
+  }
+  // Affinité entre deux pièces : le jeu, plus tes tenues enregistrées (et portées) qui comptent comme des "oui".
+  const affinity = useMemo(() => {
+    const pairs = { ...(taste.pairs || {}) };
+    const colors = { ...(taste.colors || {}) };
+    outfits.forEach((o) => {
+      const ids = o.itemIds || [];
+      const bonus = 0.5 + Math.min(1.5, (o.wornDates || []).length * 0.25);
+      for (let x = 0; x < ids.length; x++) for (let y = x + 1; y < ids.length; y++) {
+        const k = pairKey(ids[x], ids[y]);
+        pairs[k] = (pairs[k] || 0) + bonus;
+      }
+    });
+    return {
+      score(a, b) {
+        const p = pairs[pairKey(a.id, b.id)] || 0;
+        const c = colors[pairKey(hexToColorName(a.hex), hexToColorName(b.hex))] || 0;
+        return p + 0.4 * c;
+      },
+    };
+  }, [taste, outfits]);
+
   function removeIdea(id) {
     setIdeas((prev) => prev.filter((x) => x.id !== id));
   }
@@ -1848,6 +1899,7 @@ export default function App() {
     const current = swipeDeck[0];
     if (!current || swipeDrag.leaving) return;
     setSwipeDrag({ x: dir * 520, y: 0, active: false, leaving: dir });
+    recordTaste(current, dir);
     if (dir === 1) {
       setIdeas((prev) => [{ id: Date.now(), itemIds: current }, ...prev]);
       setSwipeKept((n) => n + 1);
@@ -1982,7 +2034,7 @@ export default function App() {
   // (sert à glisser une pièce phare dans une tenue "Oser du neuf").
   // "avoid" : pièces de la suggestion précédente, à éviter quand on régénère.
   const currentWeatherState = currentWeather, genOccasionState = genOccasion, genColorFamilyState = genColorFamily, genPreferenceState = genPreference;
-  function randomFrom(category, colorAnchor, optional = false, prefOverride, avoid = new Set(), noPattern = false, pairIds = new Set(), exclude = new Set(), crit = null) {
+  function randomFrom(category, colorAnchor, optional = false, prefOverride, avoid = new Set(), noPattern = false, pairIds = new Set(), exclude = new Set(), crit = null, chosen = []) {
     // "crit" : critères imposés (jeu Oui / Non) à la place de ceux du générateur.
     const currentWeather = crit ? crit.weather : currentWeatherState;
     const genOccasion = crit ? crit.occasion : genOccasionState;
@@ -2043,9 +2095,20 @@ export default function App() {
       pool = sorted.slice(0, Math.max(3, Math.ceil(sorted.length / 2))); // la moitié la moins portée
     }
 
-    // Pièces "va bien avec" les pièces de départ : un peu plus de chances d'être tirées, sans être imposées.
-    const weighted = pool.flatMap((i) => (pairIds.has(i.id) ? [i, i, i] : [i]));
-    return weighted[Math.floor(Math.random() * weighted.length)];
+    // Tirage pondéré : les pièces "va bien avec" les pièces de départ ont plus de chances,
+    // et tes goûts (jeu, tenues enregistrées) favorisent ou freinent chaque pièce selon celles déjà choisies.
+    // Ce n'est jamais une interdiction : une pièce "mal notée" garde une petite chance.
+    const weights = pool.map((i) => {
+      let w = pairIds.has(i.id) ? 3 : 1;
+      if (chosen.length) {
+        const a = chosen.reduce((sum, c) => sum + affinity.score(c, i), 0);
+        w *= Math.min(4, Math.max(0.15, 1 + 0.5 * a));
+      }
+      return w;
+    });
+    let r = Math.random() * weights.reduce((x, y) => x + y, 0);
+    for (let k = 0; k < pool.length; k++) { r -= weights[k]; if (r <= 0) return pool[k]; }
+    return pool[pool.length - 1];
   }
 
   // "Vêtements souvent portés" : cherche parmi tes tenues déjà enregistrées une qui
@@ -2153,11 +2216,13 @@ export default function App() {
     let starCat = null;
     // Déjà une pièce à motifs dans la tenue ? (les accessoires ne comptent pas)
     let hasPattern = bases.some((b) => effectiveCategory(b) !== "Accessoire" && isPatterned(b));
+    const chosen = [...bases]; // pièces déjà dans la tenue (pour tenir compte de tes goûts)
     function pick(category, optional = false) {
       const b = bases.find((x) => effectiveCategory(x) === category && !usedBase.has(x.id));
       if (b) { usedBase.add(b.id); return b; }
       const noPattern = genRules.onePattern && hasPattern && category !== "Accessoire";
-      const item = randomFrom(category, colorAnchor, optional, category === starCat ? "souvent" : undefined, avoid, noPattern, pairIds, baseSet);
+      const item = randomFrom(category, colorAnchor, optional, category === starCat ? "souvent" : undefined, avoid, noPattern, pairIds, baseSet, null, chosen);
+      if (item) chosen.push(item);
       if (item && category !== "Accessoire" && isPatterned(item)) hasPattern = true;
       if (item && !colorAnchor && !genColorFamily) {
         const fam = hexToColorFamily(item.hex);
@@ -3107,6 +3172,7 @@ export default function App() {
       agenda,
       rediscoverHidden,
       ideas,
+      taste,
     };
     const stamp = new Date().toISOString().slice(0, 10);
     const fileName = `pli-sauvegarde-${stamp}.json`;
@@ -3153,6 +3219,7 @@ export default function App() {
       setOutfits(data.outfits || []);
       setAgenda(data.agenda || {});
       setIdeas(data.ideas || []);
+      if (data.taste) setTaste(data.taste);
       if (data.rediscoverHidden) {
         setRediscoverHidden(data.rediscoverHidden);
         try { localStorage.setItem("mon-armoire-rediscover-hidden", JSON.stringify(data.rediscoverHidden)); } catch {}
@@ -5609,20 +5676,49 @@ export default function App() {
             {/* ── Pièces d'une tenue prévue : ajouter (ex. des chaussures oubliées) ou retirer, pour ce jour seulement ── */}
             {/* ── Une idée gardée : l'ajouter telle quelle, la retoucher d'abord, ou la supprimer ── */}
             {ideaViewId !== null && (() => {
-              const idea = ideas.find((x) => x.id === ideaViewId);
+              // Même liste (et même ordre) que la rangée "Tes idées" de l'onglet Tenues.
+              const shown = ideas.filter((x) => x.itemIds.filter((id) => items.some((i) => i.id === id)).length >= 2);
+              const pos = shown.findIndex((x) => x.id === ideaViewId);
+              const idea = shown[pos];
               if (!idea) return null;
               const pieces = idea.itemIds.map((id) => items.find((i) => i.id === id)).filter(Boolean);
+              const prevIdea = pos > 0 ? shown[pos - 1] : null;
+              const nextIdea = pos < shown.length - 1 ? shown[pos + 1] : null;
+              const goIdea = (x) => x && setIdeaViewId(x.id);
+              const arrow = (x, dir) => (
+                <button type="button" onClick={() => goIdea(x)} disabled={!x} aria-label={dir === "prev" ? "Idée précédente" : "Idée suivante"} className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: "#FFFFFF", opacity: x ? 1 : 0.35 }}>
+                  <ChevronDown size={18} style={{ transform: `rotate(${dir === "prev" ? 90 : -90}deg)` }} />
+                </button>
+              );
               return (
                 <div onClick={() => setIdeaViewId(null)} className="fixed inset-0 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}>
                   <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
                     <div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
                     <div className="flex items-center justify-between mb-4">
-                      <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Une idée</p>
+                      <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Idée {shown.length - pos}{shown.length > 1 && <span style={{ fontWeight: 400, fontSize: 14, color: COLORS.muted }}> · {pos + 1} / {shown.length}</span>}</p>
                       <button onClick={() => setIdeaViewId(null)} aria-label="Fermer" className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
                         <X size={14} />
                       </button>
                     </div>
-                    <div style={{ background: COLORS.haze, borderRadius: 18, padding: 4 }}>{renderFlatLay(pieces, 300)}</div>
+                    {/* Flèches (ou glisser) pour passer d'une idée à l'autre */}
+                    <div
+                      key={idea.id}
+                      className="flex items-center gap-2 slide-right"
+                      style={{ background: COLORS.haze, borderRadius: 18, padding: 6 }}
+                      onTouchStart={(e) => { outfitSwipe.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }; }}
+                      onTouchEnd={(e) => {
+                        const start = outfitSwipe.current;
+                        outfitSwipe.current = null;
+                        if (!start) return;
+                        const dx = e.changedTouches[0].clientX - start.x;
+                        if (Math.abs(dx) < 60 || Math.abs(e.changedTouches[0].clientY - start.y) > 60) return;
+                        goIdea(dx < 0 ? nextIdea : prevIdea);
+                      }}
+                    >
+                      {shown.length > 1 && arrow(prevIdea, "prev")}
+                      <div className="flex-1 min-w-0">{renderFlatLay(pieces, 300)}</div>
+                      {shown.length > 1 && arrow(nextIdea, "next")}
+                    </div>
                     <div className="flex items-center justify-between mt-2 mb-5">
                       <p className="text-xs" style={{ color: COLORS.muted }}>Pas encore dans tes tenues</p>
                       {renderPaletteDots([...new Set(pieces.flatMap(itemColors).map((h) => h.toLowerCase()))].slice(0, 5), 16)}
@@ -5644,7 +5740,7 @@ export default function App() {
                     >
                       <Pencil size={14} /> Modifier les pièces
                     </button>
-                    <button type="button" onClick={() => { removeIdea(idea.id); setIdeaViewId(null); }} className="w-full text-center text-xs mt-4" style={{ color: COLORS.muted, fontWeight: 600 }}>
+                    <button type="button" onClick={() => askConfirm("Supprimer cette idée ?", () => { removeIdea(idea.id); setIdeaViewId(nextIdea ? nextIdea.id : prevIdea ? prevIdea.id : null); })} className="w-full text-center text-xs mt-4" style={{ color: COLORS.muted, fontWeight: 600 }}>
                       Supprimer cette idée
                     </button>
                   </div>
@@ -5728,7 +5824,7 @@ export default function App() {
                     </button>
                   </div>
                   <p className="text-center text-xs mt-3" style={{ color: COLORS.muted }}>
-                    {swipeKept > 0 ? `${swipeKept} idée${swipeKept > 1 ? "s" : ""} gardée${swipeKept > 1 ? "s" : ""} · à retrouver dans Tenues` : "Glisse à droite pour garder, à gauche pour passer"}
+                    {swipeKept > 0 ? `${swipeKept} idée${swipeKept > 1 ? "s" : ""} gardée${swipeKept > 1 ? "s" : ""} · à retrouver dans Tenues` : "Glisse à droite pour garder, à gauche pour passer · pli apprend tes goûts"}
                   </p>
                 </div>
               );
