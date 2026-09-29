@@ -2298,6 +2298,11 @@ export default function App() {
     setUserName(trimmed);
   }
 
+  // Dernière position connue et heure du dernier relevé : pour rafraîchir la météo
+  // au fil de la journée sans redemander la localisation.
+  const weatherCoords = useRef(null);
+  const weatherFetchedAt = useRef(0);
+
   function requestWeather() {
     if (!navigator.geolocation) {
       setWeatherStatus("error");
@@ -2305,11 +2310,20 @@ export default function App() {
     }
     setWeatherStatus("loading");
     navigator.geolocation.getCurrentPosition(
-      async (pos) => {
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        weatherCoords.current = { latitude, longitude };
+        fetchWeatherAt(latitude, longitude);
+      },
+      () => setWeatherStatus("denied"),
+      { timeout: 8000 }
+    );
+  }
+
+  async function fetchWeatherAt(latitude, longitude) {
         try {
-          const { latitude, longitude } = pos.coords;
           const res = await fetch(
-            `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&forecast_days=3&timezone=auto`
+            `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code,precipitation_probability&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&forecast_days=3&timezone=auto`
           );
           const data = await res.json();
           // Matin / midi / soir : températures prévues à 9 h, 13 h et 19 h aujourd'hui.
@@ -2321,8 +2335,15 @@ export default function App() {
             .then((r) => r.json())
             .then((g) => { const city = g.city || g.locality; if (city) setWeatherCity(city); })
             .catch(() => {});
+          weatherFetchedAt.current = Date.now();
           setWeather({
             hours: { matin: hourAt(9), midi: hourAt(13), soir: hourAt(19) },
+            // Heure par heure pour aujourd'hui (index = heure), pour que le conseil suive la journée.
+            hourly: data.hourly ? {
+              temp: (data.hourly.temperature_2m || []).slice(0, 24),
+              code: (data.hourly.weather_code || []).slice(0, 24),
+              rain: (data.hourly.precipitation_probability || []).slice(0, 24),
+            } : null,
             temp: Math.round(data.current.temperature_2m),
             min: Math.round(data.daily.temperature_2m_min[0]),
             max: Math.round(data.daily.temperature_2m_max[0]),
@@ -2341,13 +2362,25 @@ export default function App() {
           });
           setWeatherStatus("granted");
         } catch {
-          setWeatherStatus("error");
+          // Un rafraîchissement raté garde simplement la météo déjà affichée.
+          if (!weatherFetchedAt.current) setWeatherStatus("error");
         }
-      },
-      () => setWeatherStatus("denied"),
-      { timeout: 8000 }
-    );
   }
+
+  // Rafraîchit la météo toutes les 30 min, et quand on revient sur l'appli après un moment
+  // (sur iPhone, l'appli reste souvent ouverte en arrière-plan pendant des heures).
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    const refresh = () => {
+      setClockTick((t) => t + 1); // le conseil dépend de l'heure : on le recalcule
+      const c = weatherCoords.current;
+      if (c && Date.now() - weatherFetchedAt.current > 20 * 60 * 1000) fetchWeatherAt(c.latitude, c.longitude);
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    const timer = setInterval(refresh, 30 * 60 * 1000);
+    return () => { document.removeEventListener("visibilitychange", onVisible); clearInterval(timer); };
+  }, []);
 
   // Formate la date du jour pour l'en-tête de la page Aujourd'hui (ex: "samedi 29 août").
   // Traduit un code météo (norme WMO, utilisée par Open-Meteo) en texte lisible + icône.
@@ -2410,12 +2443,43 @@ export default function App() {
   }
 
   // Petite phrase de conseil sous la météo, selon l'écart de température et la pluie.
+  // Le conseil suit l'heure : le matin on parle de la journée, l'après-midi de ce qui reste,
+  // le soir de la soirée, et à partir de 21 h de demain.
   function weatherAdvice(w) {
     if (!w) return "";
+    const h = new Date().getHours();
+    const hr = w.hourly;
+    if (!hr || !hr.temp || hr.temp.length < 24 || h < 11) return dayAdvice(w);
+    if (h >= 21 && w.tomorrow) {
+      const t = dayAdvice(w.tomorrow);
+      return `Pour demain : ${t.charAt(0).toLowerCase()}${t.slice(1)}`;
+    }
+    const range = (a, b) => hr.temp.slice(a, b).filter((n) => n != null);
+    const rainAhead = hr.code.slice(h, 23).some((c, k) => isRainCode(c) || (hr.rain[h + k] != null && hr.rain[h + k] >= 50));
+    if (rainAhead) return h < 17 ? "Pluie prévue d'ici ce soir : prends une veste ou un imper." : "Pluie prévue ce soir : de quoi te couvrir si tu ressors.";
+    const evening = range(Math.max(h, 19), 23);
+    const eveMin = evening.length ? Math.round(Math.min(...evening)) : w.temp;
+    if (h < 17) {
+      if (w.temp - eveMin >= 6 && eveMin < 15) return `Ça va se rafraîchir ce soir (${eveMin}°) : garde une veste sous la main.`;
+      if (w.temp > 30) return "Grosse chaleur cet après-midi : matières légères, pas besoin de veste.";
+      if (w.temp > 25) return "Il fait chaud cet après-midi : matières légères, pas besoin de veste.";
+      if (w.temp >= 20) return "Doux cet après-midi : une chemise ou une veste légère suffit.";
+      if (w.temp >= 14) return "Frais cet après-midi : une couche en plus, et une veste.";
+      return "Il fait froid : pull chaud et veste de rigueur.";
+    }
+    if (eveMin < 10) return `Froid ce soir (${eveMin}°) : pull et veste si tu ressors.`;
+    if (eveMin < 15) return `Soirée fraîche (${eveMin}°) : prends une veste si tu sors.`;
+    if (eveMin < 20) return "Soirée tempérée : une veste légère suffit.";
+    return "Soirée douce : pas besoin de veste.";
+  }
+
+  // Conseil pour une journée entière (le matin, et pour demain).
+  function dayAdvice(w) {
     const swing = w.max - w.min;
     if (isRainyDay(w)) return "Pluie prévue : prends une veste ou un imper.";
     if (swing >= 8 && w.min < 15) return "Frais ce matin, plus doux ensuite : prévois une veste que tu peux enlever.";
-    if (w.max > 25) return "Grosse chaleur : matières légères, pas besoin de veste.";
+    if (w.max > 30) return "Grosse chaleur : matières légères, pas besoin de veste.";
+    if (w.max > 25) return "Il fait chaud : matières légères, pas besoin de veste.";
     if (w.max >= 20) return "Temps doux : une chemise ou une veste légère suffit.";
     if (w.max >= 14) return "Temps frais : ajoute une couche, et une veste.";
     return "Il fait froid : pull chaud et veste de rigueur.";
