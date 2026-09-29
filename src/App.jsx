@@ -4804,8 +4804,17 @@ export default function App() {
                   </div>
                   <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2">
-                      {createOutfitStep === "summary" && (
-                        <button type="button" onClick={() => setCreateOutfitStep("select")} aria-label="Retour" className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                      {(createOutfitStep === "summary" || pendingIdeaId) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (createOutfitStep === "summary") setCreateOutfitStep("select");
+                            else { setShowOutfitForm(false); setIdeaViewId(pendingIdeaId); } // retour à l'idée
+                          }}
+                          aria-label="Retour"
+                          className="w-8 h-8 rounded-full flex items-center justify-center"
+                          style={{ background: COLORS.haze }}
+                        >
                           <ArrowLeft size={14} />
                         </button>
                       )}
@@ -5618,7 +5627,13 @@ export default function App() {
                       <p className="text-xs" style={{ color: COLORS.muted }}>Pas encore dans tes tenues</p>
                       {renderPaletteDots([...new Set(pieces.flatMap(itemColors).map((h) => h.toLowerCase()))].slice(0, 5), 16)}
                     </div>
-                    <button type="button" onClick={() => ideaToOutfit(idea)} className="w-full h-12 rounded-full text-sm mb-2" style={{ background: COLORS.rose, color: "#FFFFFF", fontWeight: 700, boxShadow: "0 6px 16px rgba(255,75,51,0.3)" }}>
+                    {/* Ajouter : on passe par "Presque fini" pour choisir le nom, la météo et les occasions */}
+                    <button
+                      type="button"
+                      onClick={() => { const ids = pieces.map((i) => i.id); setIdeaViewId(null); openCreateOutfit(); setSelectedIds(ids); setPendingIdeaId(idea.id); setCreateOutfitStep("summary"); }}
+                      className="w-full h-12 rounded-full text-sm mb-2"
+                      style={{ background: COLORS.rose, color: "#FFFFFF", fontWeight: 700, boxShadow: "0 6px 16px rgba(255,75,51,0.3)" }}
+                    >
                       Ajouter à mes tenues
                     </button>
                     <button
@@ -5627,7 +5642,7 @@ export default function App() {
                       className="w-full h-12 rounded-full text-sm flex items-center justify-center gap-1.5"
                       style={{ border: `1px solid ${COLORS.line}`, fontWeight: 700 }}
                     >
-                      <Pencil size={14} /> La modifier avant
+                      <Pencil size={14} /> Modifier les pièces
                     </button>
                     <button type="button" onClick={() => { removeIdea(idea.id); setIdeaViewId(null); }} className="w-full text-center text-xs mt-4" style={{ color: COLORS.muted, fontWeight: 600 }}>
                       Supprimer cette idée
