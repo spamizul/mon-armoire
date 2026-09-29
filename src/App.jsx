@@ -2522,6 +2522,107 @@ export default function App() {
     Chaussures: [64, 68, 32, 28, 8, 4],
     Accessoire: [5, 64, 28, 30, -8, 4],
   };
+  // Composer une tenue : aperçu en direct en haut, une catégorie à la fois dessous, bouton fixe en bas.
+  // Utilisé par "Créer une tenue" (le +) et par la planification d'une tenue. La feuille doit avoir pt-3 pb-8.
+  function renderPieceComposer({ ids, onToggle, onContinue }) {
+    const cats = CATEGORIES.filter((c) => items.some((i) => i.category === c));
+    const cat = cats.includes(planCat) ? planCat : cats[0];
+    const picked = ids.map((id) => items.find((i) => i.id === id)).filter(Boolean);
+    const list = sortItems(items.filter((i) => i.category === cat), "couleur");
+    return (
+      <>
+        {/* Aperçu + catégories : restent en haut pendant qu'on fait défiler la grille */}
+        <div className="sticky -mx-5 px-5 pb-3" style={{ top: -12, zIndex: 2, background: "#FFFFFF", borderBottom: `1px solid ${COLORS.line}` }}>
+          {/* Les pièces choisies, en entier (pas recadrées) : toucher pour retirer */}
+          {picked.length > 0 ? (
+            <div data-no-swipe className="no-scrollbar -mx-5 px-5 pt-1 flex gap-2 overflow-x-auto">
+              {picked.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onToggle(item.id)}
+                  aria-label={`Retirer : ${item.name}`}
+                  className="relative flex-shrink-0 overflow-hidden"
+                  style={{ width: 76, height: 76, borderRadius: 14, background: item.photo ? COLORS.haze : item.hex }}
+                >
+                  {item.photo && <img src={thumbOf(item)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />}
+                  <span className="absolute w-5 h-5 rounded-full flex items-center justify-center" style={{ top: 4, right: 4, background: "rgba(17,17,17,0.75)" }}>
+                    <X size={10} color="#FFFFFF" strokeWidth={3} />
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="flex items-center justify-center text-center px-6 mt-1" style={{ height: 76, borderRadius: 14, border: `1.5px dashed ${COLORS.line}`, color: COLORS.muted, fontSize: 13 }}>
+              Les pièces choisies apparaissent ici
+            </div>
+          )}
+          <div data-no-swipe className="no-scrollbar -mx-5 px-5 pt-3 flex gap-2 overflow-x-auto">
+            {cats.map((c) => {
+              const active = c === cat;
+              const has = picked.some((i) => i.category === c);
+              const n = items.filter((i) => i.category === c).length;
+              return (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setPlanCat(c)}
+                  className="flex-shrink-0 flex items-center gap-1.5 h-9 px-3.5 rounded-full text-sm"
+                  style={{ background: active ? COLORS.ink : "transparent", color: active ? "#FFFFFF" : COLORS.ink, border: `1px solid ${active ? COLORS.ink : COLORS.line}`, fontWeight: 600 }}
+                >
+                  {has && <span style={{ width: 6, height: 6, borderRadius: 3, background: COLORS.rose }} />}
+                  {CATEGORY_PLURALS[c] || c}
+                  <span style={{ fontSize: 12, fontWeight: 500, opacity: 0.55 }}>{n}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2 pt-3 pb-4">
+          {list.map((item) => {
+            const on = ids.includes(item.id);
+            return (
+              <button
+                type="button"
+                key={item.id}
+                onClick={() => onToggle(item.id)}
+                aria-label={item.name}
+                aria-pressed={on}
+                className="relative overflow-hidden"
+                style={{ aspectRatio: "1 / 1", borderRadius: 14, background: COLORS.haze, boxShadow: on ? `0 0 0 2.5px ${COLORS.rose}` : "none" }}
+              >
+                {item.photo ? (
+                  <img src={thumbOf(item)} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                ) : (
+                  <div style={{ background: item.hex, width: "100%", height: "100%" }} />
+                )}
+                {on && (
+                  <span className="absolute w-6 h-6 rounded-full flex items-center justify-center" style={{ top: 6, right: 6, background: COLORS.rose }}>
+                    <Check size={13} color="#FFFFFF" strokeWidth={3.2} />
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Bouton toujours visible en bas */}
+        <div className="sticky -mx-5 px-5 pt-3" style={{ bottom: -32, paddingBottom: 32, zIndex: 2, background: "#FFFFFF", borderTop: `1px solid ${COLORS.line}` }}>
+          <button
+            type="button"
+            onClick={onContinue}
+            disabled={picked.length === 0}
+            className="w-full h-12 rounded-full text-sm"
+            style={{ background: picked.length ? COLORS.rose : COLORS.haze, color: picked.length ? "#FFFFFF" : COLORS.muted, fontWeight: 700, boxShadow: picked.length ? "0 6px 16px rgba(255,75,51,0.3)" : "none" }}
+          >
+            {picked.length ? `Continuer · ${picked.length} pièce${picked.length > 1 ? "s" : ""}` : "Choisis au moins une pièce"}
+          </button>
+        </div>
+      </>
+    );
+  }
+
   function renderSilhouette(list, height, onPiece) {
     const used = {};
     return (
@@ -2725,8 +2826,9 @@ export default function App() {
   // Ouvre la création d'une tenue (depuis l'onglet Tenues ou le bouton "+").
   function openCreateOutfit() {
     setCreateOutfitStep("select");
+    setPlanCat(null);
     setOutfitTags(EMPTY_OUTFIT_TAGS);
-    setOutfitName(nextOutfitName());
+    setOutfitName("");
     setSelectedIds([]);
     setShowOutfitForm(true);
   }
@@ -4451,119 +4553,47 @@ export default function App() {
                 style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}
               >
                 {/* Panneau qui monte du bas de l'écran */}
-                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-2" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
-                  <div data-sheet-handle className="flex justify-center -mt-2 pt-2 pb-2" style={{ touchAction: "none", cursor: "grab" }}>
+                <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
+                  <div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}>
                     <span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} />
                   </div>
-                  <div className="flex items-center justify-between mb-3">
-                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Créer une tenue</p>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      {createOutfitStep === "summary" && (
+                        <button type="button" onClick={() => setCreateOutfitStep("select")} aria-label="Retour" className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                          <ArrowLeft size={14} />
+                        </button>
+                      )}
+                      <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>{createOutfitStep === "summary" ? "Presque fini" : "Créer une tenue"}</p>
+                    </div>
                     <button type="button" onClick={() => setShowOutfitForm(false)} aria-label="Fermer" className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
                       <X size={14} />
                     </button>
                   </div>
                   <form onSubmit={saveOutfit}>
-                    {createOutfitStep === "select" && (
-                      <>
-                        {/* Une rangée par catégorie, qui défile sur le côté, comme la Garde-robe.
-                            Les photos ne se chargent qu'en arrivant à l'écran (loading="lazy"). */}
-                        <div className="flex flex-col gap-5 pb-4">
-                          {CATEGORIES.map((cat) => {
-                            const catItems = sortItems(items.filter((i) => i.category === cat), "couleur");
-                            if (catItems.length === 0) return null;
-                            return (
-                              <section key={cat}>
-                                <p className="text-sm mb-2" style={{ fontWeight: 600 }}>
-                                  {CATEGORY_PLURALS[cat] || cat}{" "}
-                                  <span style={{ fontWeight: 400, color: COLORS.muted }}>· {catItems.length}</span>
-                                </p>
-                                <div data-no-swipe className="no-scrollbar -mx-5 px-5 py-1 flex gap-2 overflow-x-auto">
-                                  {catItems.map((item) => {
-                                    const isSelected = selectedIds.includes(item.id);
-                                    return (
-                                      <button
-                                        type="button"
-                                        key={item.id}
-                                        onClick={() => toggleSelected(item.id)}
-                                        aria-label={item.name}
-                                        aria-pressed={isSelected}
-                                        className="relative flex-shrink-0 overflow-hidden"
-                                        style={{ width: 84, height: 84, borderRadius: 14, background: COLORS.haze, boxShadow: isSelected ? `0 0 0 2px ${COLORS.rose}` : "none" }}
-                                      >
-                                        {item.photo ? (
-                                          <img src={thumbOf(item)} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                                        ) : (
-                                          <div style={{ background: item.hex, width: "100%", height: "100%" }} />
-                                        )}
-                                        {isSelected && (
-                                          <span className="absolute w-5 h-5 rounded-full flex items-center justify-center" style={{ top: 5, right: 5, background: COLORS.rose }}>
-                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 7" /></svg>
-                                          </span>
-                                        )}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </section>
-                            );
-                          })}
-                        </div>
-
-                        {/* Bandeau collé en bas : aperçu de la sélection + Suivant */}
-                        <div className="-mx-5 px-5 pt-3 pb-6 flex items-center gap-3" style={{ position: "sticky", bottom: 0, background: "#FFFFFF", borderTop: `1px solid ${COLORS.line}` }}>
-                          {selectedIds.length > 0 && (
-                            <div className="flex flex-shrink-0" style={{ paddingLeft: 8 }}>
-                              {selectedIds.slice(0, 4).map((id) => {
-                                const item = items.find((i) => i.id === id);
-                                if (!item) return null;
-                                return (
-                                  <div key={id} className="overflow-hidden" style={{ width: 40, height: 40, borderRadius: 10, marginLeft: -8, boxShadow: "0 0 0 2px #FFFFFF", background: item.hex }}>
-                                    {item.photo && <img loading="lazy" decoding="async" src={thumbOf(item)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => setCreateOutfitStep("summary")}
-                            disabled={selectedIds.length === 0}
-                            className="flex-1 rounded-full text-white"
-                            style={{ height: 48, background: COLORS.rose, opacity: selectedIds.length === 0 ? 0.4 : 1, fontWeight: 600 }}
-                          >
-                            {selectedIds.length === 0 ? "Choisis tes pièces" : `Suivant · ${selectedIds.length}`}
-                          </button>
-                        </div>
-                      </>
-                    )}
+                    {createOutfitStep === "select" && renderPieceComposer({
+                      ids: selectedIds,
+                      onToggle: toggleSelected,
+                      onContinue: () => setCreateOutfitStep("summary"),
+                    })}
 
                     {createOutfitStep === "summary" && (
                       <>
-                        <button
-                          type="button"
-                          onClick={() => setCreateOutfitStep("select")}
-                          className="flex items-center gap-1.5 text-xs mb-3"
-                          style={{ opacity: 0.6 }}
-                        >
-                          <ArrowLeft size={13} /> Modifier la sélection
-                        </button>
-
-                        <div className="grid grid-cols-3 gap-2 mb-4">
-                          {selectedIds.map((id) => {
-                            const item = items.find((i) => i.id === id);
-                            if (!item) return null;
-                            return (
-                              <div key={item.id} className="rounded-xl overflow-hidden" style={{ background: COLORS.haze }}>
-                                {item.photo ? (
-                                  <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
-                                ) : (
-                                  <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
-                                )}
+                        {(() => {
+                          const picked = selectedIds.map((id) => items.find((i) => i.id === id)).filter(Boolean);
+                          return (
+                            <>
+                              <div style={{ background: COLORS.haze, borderRadius: 18, padding: 4 }}>{renderFlatLay(picked, 300)}</div>
+                              <div className="flex items-center justify-between mt-2 mb-5">
+                                <button type="button" onClick={() => setCreateOutfitStep("select")} className="text-xs" style={{ color: COLORS.rose, fontWeight: 700 }}>Modifier les pièces</button>
+                                {renderPaletteDots([...new Set(picked.flatMap(itemColors).map((h) => h.toLowerCase()))].slice(0, 5), 16)}
                               </div>
-                            );
-                          })}
-                        </div>
+                            </>
+                          );
+                        })()}
 
-                        <input value={outfitName} onChange={(e) => setOutfitName(e.target.value)} placeholder="Nom de la tenue" className="w-full px-4 py-2.5 rounded-xl text-sm mb-3" style={{ border: `1px solid ${COLORS.line}`, outline: "none" }} />
+                        <p className="text-sm mb-1.5" style={{ fontWeight: 600 }}>Nom</p>
+                        <input value={outfitName} onChange={(e) => setOutfitName(e.target.value)} placeholder={nextOutfitName()} className="w-full px-4 rounded-xl text-sm mb-4" style={{ height: 46, border: `1px solid ${COLORS.line}`, outline: "none" }} />
 
                         {renderOutfitTagPicker()}
 
@@ -4573,10 +4603,9 @@ export default function App() {
                           if (!m) return null;
                           return renderOutfitDupPanel(m, { onView: () => { setShowOutfitForm(false); changeView("tenues"); setDetailOutfitId(m.outfit.id); } });
                         })()}
-                        <button type="submit" disabled={!outfitName.trim() || selectedIds.length === 0 || !!(findSimilarOutfit(selectedIds) || {}).exact} className="w-full flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold text-white" style={{ background: COLORS.rose, opacity: !outfitName.trim() || selectedIds.length === 0 || !!(findSimilarOutfit(selectedIds) || {}).exact ? 0.4 : 1 }}>
-                          <Plus size={16} /> Enregistrer la tenue
+                        <button type="submit" disabled={selectedIds.length === 0 || !!(findSimilarOutfit(selectedIds) || {}).exact} className="w-full flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm text-white" style={{ background: COLORS.rose, fontWeight: 700, boxShadow: "0 6px 16px rgba(255,75,51,0.3)", opacity: selectedIds.length === 0 || !!(findSimilarOutfit(selectedIds) || {}).exact ? 0.4 : 1 }}>
+                          Enregistrer la tenue
                         </button>
-                        <div className="h-6" />
                       </>
                     )}
                   </form>
@@ -5717,7 +5746,7 @@ export default function App() {
                         {(() => {
                           const pieces = selectedIds.map((id) => items.find((i) => i.id === id)).filter(Boolean);
                           return pieces.length > 0 ? (
-                            <div style={{ background: COLORS.haze, borderRadius: 18, padding: 4 }}>{renderFlatLay(pieces, 250)}</div>
+                            <div style={{ background: COLORS.haze, borderRadius: 18, padding: 4 }}>{renderFlatLay(pieces, 300)}</div>
                           ) : (
                             <div className="flex items-center justify-center text-sm" style={{ height: 150, borderRadius: 18, background: COLORS.haze, color: COLORS.muted }}>Aucune pièce</div>
                           );
@@ -6159,94 +6188,11 @@ export default function App() {
                   )}
 
                   {/* Étape 2b : composer la tenue — aperçu en direct en haut, une catégorie à la fois dessous */}
-                  {quickPlanMode === "create" && planStep === "pick" && (() => {
-                    const cats = CATEGORIES.filter((c) => items.some((i) => i.category === c));
-                    const cat = cats.includes(planCat) ? planCat : cats[0];
-                    const picked = planItemIds.map((id) => items.find((i) => i.id === id)).filter(Boolean);
-                    const list = sortItems(items.filter((i) => i.category === cat), "couleur");
-                    return (
-                      <>
-                        {/* Aperçu + catégories : restent en haut pendant qu'on fait défiler la grille */}
-                        <div className="sticky -mx-5 px-5 pb-3" style={{ top: -12, zIndex: 2, background: "#FFFFFF", borderBottom: `1px solid ${COLORS.line}` }}>
-                          {picked.length > 0 ? (
-                            <>
-                              <div style={{ background: COLORS.haze, borderRadius: 18, padding: 4 }}>
-                                {renderFlatLay(picked, 140, (item) => togglePlanItem(item.id))}
-                              </div>
-                              <p className="text-center mt-1.5" style={{ fontSize: 12, color: COLORS.muted }}>
-                                {picked.length} pièce{picked.length > 1 ? "s" : ""} · touche une pièce de l'aperçu pour la retirer
-                              </p>
-                            </>
-                          ) : (
-                            <div className="flex items-center justify-center text-center px-6" style={{ height: 148, borderRadius: 18, background: COLORS.haze, color: COLORS.muted, fontSize: 13 }}>
-                              Ta tenue apparaît ici au fur et à mesure
-                            </div>
-                          )}
-                          <div data-no-swipe className="no-scrollbar -mx-5 px-5 pt-3 flex gap-2 overflow-x-auto">
-                            {cats.map((c) => {
-                              const active = c === cat;
-                              const has = picked.some((i) => i.category === c);
-                              const n = items.filter((i) => i.category === c).length;
-                              return (
-                                <button
-                                  key={c}
-                                  type="button"
-                                  onClick={() => setPlanCat(c)}
-                                  className="flex-shrink-0 flex items-center gap-1.5 h-9 px-3.5 rounded-full text-sm"
-                                  style={{ background: active ? COLORS.ink : "transparent", color: active ? "#FFFFFF" : COLORS.ink, border: `1px solid ${active ? COLORS.ink : COLORS.line}`, fontWeight: 600 }}
-                                >
-                                  {has && <span style={{ width: 6, height: 6, borderRadius: 3, background: COLORS.rose }} />}
-                                  {CATEGORY_PLURALS[c] || c}
-                                  <span style={{ fontSize: 12, fontWeight: 500, opacity: 0.55 }}>{n}</span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-3 gap-2 pt-3 pb-4">
-                          {list.map((item) => {
-                            const on = planItemIds.includes(item.id);
-                            return (
-                              <button
-                                type="button"
-                                key={item.id}
-                                onClick={() => togglePlanItem(item.id)}
-                                aria-label={item.name}
-                                aria-pressed={on}
-                                className="relative overflow-hidden"
-                                style={{ aspectRatio: "1 / 1", borderRadius: 14, background: COLORS.haze, boxShadow: on ? `0 0 0 2.5px ${COLORS.rose}` : "none" }}
-                              >
-                                {item.photo ? (
-                                  <img src={thumbOf(item)} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                                ) : (
-                                  <div style={{ background: item.hex, width: "100%", height: "100%" }} />
-                                )}
-                                {on && (
-                                  <span className="absolute w-6 h-6 rounded-full flex items-center justify-center" style={{ top: 6, right: 6, background: COLORS.rose }}>
-                                    <Check size={13} color="#FFFFFF" strokeWidth={3.2} />
-                                  </span>
-                                )}
-                              </button>
-                            );
-                          })}
-                        </div>
-
-                        {/* Bouton toujours visible en bas */}
-                        <div className="sticky -mx-5 px-5 pt-3" style={{ bottom: -32, paddingBottom: 32, zIndex: 2, background: "#FFFFFF", borderTop: `1px solid ${COLORS.line}` }}>
-                          <button
-                            type="button"
-                            onClick={() => { setReusableDup(null); setPlanStep("final"); }}
-                            disabled={picked.length === 0}
-                            className="w-full h-12 rounded-full text-sm"
-                            style={{ background: picked.length ? COLORS.rose : COLORS.haze, color: picked.length ? "#FFFFFF" : COLORS.muted, fontWeight: 700, boxShadow: picked.length ? "0 6px 16px rgba(255,75,51,0.3)" : "none" }}
-                          >
-                            {picked.length ? `Continuer · ${picked.length} pièce${picked.length > 1 ? "s" : ""}` : "Choisis au moins une pièce"}
-                          </button>
-                        </div>
-                      </>
-                    );
-                  })()}
+                  {quickPlanMode === "create" && planStep === "pick" && renderPieceComposer({
+                    ids: planItemIds,
+                    onToggle: togglePlanItem,
+                    onContinue: () => { setReusableDup(null); setPlanStep("final"); },
+                  })}
 
                   {/* Étape 2c : nom, date, garder dans mes tenues */}
                   {quickPlanMode === "create" && planStep === "final" && (() => {
@@ -6264,7 +6210,7 @@ export default function App() {
                     };
                     return (
                       <>
-                        <div style={{ background: COLORS.haze, borderRadius: 18, padding: 4 }}>{renderFlatLay(picked, 220)}</div>
+                        <div style={{ background: COLORS.haze, borderRadius: 18, padding: 4 }}>{renderFlatLay(picked, 300)}</div>
                         <div className="flex items-center justify-between mt-2 mb-5">
                           <button type="button" onClick={() => setPlanStep("pick")} className="text-xs" style={{ color: COLORS.rose, fontWeight: 700 }}>Modifier les pièces</button>
                           {renderPaletteDots([...new Set(picked.flatMap(itemColors).map((h) => h.toLowerCase()))].slice(0, 5), 16)}
