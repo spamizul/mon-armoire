@@ -649,6 +649,9 @@ export default function App() {
   const [quickPlanMode, setQuickPlanMode] = useState("choice");
   // Coché : la tenue créée via "Planifier" sera aussi enregistrée dans la collection de tenues.
   const [alsoSaveOutfit, setAlsoSaveOutfit] = useState(false);
+  // Créateur de tenue : catégorie affichée, et étape ("pick" = choisir les pièces, "final" = nom, date…)
+  const [planCat, setPlanCat] = useState(null);
+  const [planStep, setPlanStep] = useState("pick");
   // Le mois actuellement affiché dans le calendrier de l'agenda.
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
   // La date dont on affiche le détail dans la popup "jour" (null = fermée).
@@ -715,6 +718,8 @@ export default function App() {
     setPlanDate(dateStr);
     setPlanItemIds([]);
     setPlanLabel("");
+    setPlanStep("pick");
+    setPlanCat(null);
     setQuickPlanMode("choice");
     setShowQuickPlanModal(true);
   }
@@ -2502,7 +2507,7 @@ export default function App() {
     Chaussures: [64, 68, 32, 28, 8, 4],
     Accessoire: [5, 64, 28, 30, -8, 4],
   };
-  function renderSilhouette(list, height) {
+  function renderSilhouette(list, height, onPiece) {
     const used = {};
     return (
       <div style={{ position: "relative", height, borderRadius: 18, background: "#FFFFFF", overflow: "hidden" }}>
@@ -2517,7 +2522,9 @@ export default function App() {
           return (
             <div
               key={item.id}
+              onClick={onPiece ? () => onPiece(item) : undefined}
               style={{
+                cursor: onPiece ? "pointer" : undefined,
                 position: "absolute", left: `${Math.min(l + shift, 100 - w)}%`, top: `${t + (n - 1) * 6}%`, width: `${w}%`, height: `${h}%`,
                 transform: `rotate(${r + (n - 1) * 6}deg)`, zIndex: z * 10 + n,
                 ...(cut ? {} : { borderRadius: 14, overflow: "hidden", boxShadow: "0 4px 14px rgba(0,0,0,0.12)", background: item.hex }),
@@ -2541,11 +2548,11 @@ export default function App() {
     );
   }
 
-  function renderFlatLay(planItems, height) {
+  function renderFlatLay(planItems, height, onPiece) {
     const order = (i) => CATEGORIES.indexOf(i.category);
     const list = [...planItems].sort((a, b) => order(a) - order(b)).slice(0, 6);
     // Au moins la moitié des pièces détourées → version "silhouette" qui se chevauche.
-    if (list.filter(isCutout).length * 2 >= list.length) return renderSilhouette(list, height);
+    if (list.filter(isCutout).length * 2 >= list.length) return renderSilhouette(list, height, onPiece);
     const layout = FLATLAY_LAYOUTS[list.length] || FLATLAY_LAYOUTS[6];
     return (
       <div style={{ position: "relative", height, borderRadius: 18, background: "#FFFFFF", overflow: "hidden" }}>
@@ -2554,6 +2561,7 @@ export default function App() {
           return (
             <div
               key={item.id}
+              onClick={onPiece ? () => onPiece(item) : undefined}
               style={isCutout(item)
                 // Vêtement détouré : posé directement sur le fond blanc, avec une ombre qui suit sa forme.
                 ? { position: "absolute", left: `${l}%`, top: `${t}%`, width: `${w}%`, height: `${h}%`, transform: `rotate(${r}deg)` }
@@ -6063,12 +6071,12 @@ export default function App() {
                   <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2">
                       {quickPlanMode !== "choice" && (
-                        <button onClick={() => setQuickPlanMode("choice")} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                        <button onClick={() => (quickPlanMode === "create" && planStep === "final" ? setPlanStep("pick") : setQuickPlanMode("choice"))} aria-label="Retour" className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
                           <ArrowLeft size={14} />
                         </button>
                       )}
                       <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>
-                        {planDate === todayKey() ? "Tenue pour aujourd'hui" : planDate === tomorrowKey() ? "Tenue pour demain" : "Planifier une tenue"}
+                        {quickPlanMode === "create" && planStep === "final" ? "Presque fini" : planDate === todayKey() ? "Tenue pour aujourd'hui" : planDate === tomorrowKey() ? "Tenue pour demain" : "Planifier une tenue"}
                       </p>
                     </div>
                     <button onClick={() => setShowQuickPlanModal(false)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
@@ -6123,7 +6131,7 @@ export default function App() {
                       >
                         <p className="font-medium">Une de mes tenues</p>
                       </button>
-                      <button onClick={() => setQuickPlanMode("create")} className="w-full text-left p-3 rounded-lg text-sm" style={{ border: `1px solid ${COLORS.line}` }}>
+                      <button onClick={() => { setPlanStep("pick"); setQuickPlanMode("create"); }} className="w-full text-left p-3 rounded-lg text-sm" style={{ border: `1px solid ${COLORS.line}` }}>
                         <p className="font-medium">Créer une tenue</p>
                       </button>
                       <button
@@ -6188,60 +6196,169 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Étape 2b : sélection manuelle des vêtements */}
-                  {quickPlanMode === "create" && (
-                    <>
-                      <input
-                        value={planLabel}
-                        onChange={(e) => setPlanLabel(e.target.value)}
-                        placeholder="Nom (optionnel)"
-                        className="w-full px-4 py-2.5 rounded-xl text-sm mb-3"
-                        style={{ border: `1px solid ${COLORS.line}`, outline: "none" }}
-                      />
+                  {/* Étape 2b : composer la tenue — aperçu en direct en haut, une catégorie à la fois dessous */}
+                  {quickPlanMode === "create" && planStep === "pick" && (() => {
+                    const cats = CATEGORIES.filter((c) => items.some((i) => i.category === c));
+                    const cat = cats.includes(planCat) ? planCat : cats[0];
+                    const picked = planItemIds.map((id) => items.find((i) => i.id === id)).filter(Boolean);
+                    const list = sortItems(items.filter((i) => i.category === cat), "couleur");
+                    return (
+                      <>
+                        {/* Aperçu + catégories : restent en haut pendant qu'on fait défiler la grille */}
+                        <div className="sticky -mx-5 px-5 pb-3" style={{ top: -12, zIndex: 2, background: "#FFFFFF", borderBottom: `1px solid ${COLORS.line}` }}>
+                          {picked.length > 0 ? (
+                            <>
+                              <div style={{ background: COLORS.haze, borderRadius: 18, padding: 4 }}>
+                                {renderFlatLay(picked, 140, (item) => togglePlanItem(item.id))}
+                              </div>
+                              <p className="text-center mt-1.5" style={{ fontSize: 12, color: COLORS.muted }}>
+                                {picked.length} pièce{picked.length > 1 ? "s" : ""} · touche une pièce de l'aperçu pour la retirer
+                              </p>
+                            </>
+                          ) : (
+                            <div className="flex items-center justify-center text-center px-6" style={{ height: 148, borderRadius: 18, background: COLORS.haze, color: COLORS.muted, fontSize: 13 }}>
+                              Ta tenue apparaît ici au fur et à mesure
+                            </div>
+                          )}
+                          <div data-no-swipe className="no-scrollbar -mx-5 px-5 pt-3 flex gap-2 overflow-x-auto">
+                            {cats.map((c) => {
+                              const active = c === cat;
+                              const has = picked.some((i) => i.category === c);
+                              const n = items.filter((i) => i.category === c).length;
+                              return (
+                                <button
+                                  key={c}
+                                  type="button"
+                                  onClick={() => setPlanCat(c)}
+                                  className="flex-shrink-0 flex items-center gap-1.5 h-9 px-3.5 rounded-full text-sm"
+                                  style={{ background: active ? COLORS.ink : "transparent", color: active ? "#FFFFFF" : COLORS.ink, border: `1px solid ${active ? COLORS.ink : COLORS.line}`, fontWeight: 600 }}
+                                >
+                                  {has && <span style={{ width: 6, height: 6, borderRadius: 3, background: COLORS.rose }} />}
+                                  {CATEGORY_PLURALS[c] || c}
+                                  <span style={{ fontSize: 12, fontWeight: 500, opacity: 0.55 }}>{n}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
 
-                      <div className="mb-4">
-                        {renderItemRows({
-                          isSelected: (item) => planItemIds.includes(item.id),
-                          onPick: (item) => togglePlanItem(item.id),
-                        })}
-                      </div>
+                        <div className="grid grid-cols-3 gap-2 pt-3 pb-4">
+                          {list.map((item) => {
+                            const on = planItemIds.includes(item.id);
+                            return (
+                              <button
+                                type="button"
+                                key={item.id}
+                                onClick={() => togglePlanItem(item.id)}
+                                aria-label={item.name}
+                                aria-pressed={on}
+                                className="relative overflow-hidden"
+                                style={{ aspectRatio: "1 / 1", borderRadius: 14, background: COLORS.haze, boxShadow: on ? `0 0 0 2.5px ${COLORS.rose}` : "none" }}
+                              >
+                                {item.photo ? (
+                                  <img src={thumbOf(item)} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                                ) : (
+                                  <div style={{ background: item.hex, width: "100%", height: "100%" }} />
+                                )}
+                                {on && (
+                                  <span className="absolute w-6 h-6 rounded-full flex items-center justify-center" style={{ top: 6, right: 6, background: COLORS.rose }}>
+                                    <Check size={13} color="#FFFFFF" strokeWidth={3.2} />
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
 
-                      <label className="flex items-center gap-2 text-xs mb-4" style={{ opacity: 0.7 }}>
+                        {/* Bouton toujours visible en bas */}
+                        <div className="sticky -mx-5 px-5 pt-3" style={{ bottom: -32, paddingBottom: 32, zIndex: 2, background: "#FFFFFF", borderTop: `1px solid ${COLORS.line}` }}>
+                          <button
+                            type="button"
+                            onClick={() => { setReusableDup(null); setPlanStep("final"); }}
+                            disabled={picked.length === 0}
+                            className="w-full h-12 rounded-full text-sm"
+                            style={{ background: picked.length ? COLORS.rose : COLORS.haze, color: picked.length ? "#FFFFFF" : COLORS.muted, fontWeight: 700, boxShadow: picked.length ? "0 6px 16px rgba(255,75,51,0.3)" : "none" }}
+                          >
+                            {picked.length ? `Continuer · ${picked.length} pièce${picked.length > 1 ? "s" : ""}` : "Choisis au moins une pièce"}
+                          </button>
+                        </div>
+                      </>
+                    );
+                  })()}
+
+                  {/* Étape 2c : nom, date, garder dans mes tenues */}
+                  {quickPlanMode === "create" && planStep === "final" && (() => {
+                    const picked = planItemIds.map((id) => items.find((i) => i.id === id)).filter(Boolean);
+                    const [py, pm, pd] = (planDate || todayKey()).split("-").map(Number);
+                    const mixName = `Mix ${new Date(py, pm - 1, pd).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}`;
+                    const other = planDate !== todayKey() && planDate !== tomorrowKey();
+                    const dayChip = (active) => ({ background: active ? COLORS.ink : "transparent", color: active ? "#FFFFFF" : COLORS.ink, border: `1px solid ${active ? COLORS.ink : COLORS.line}`, fontWeight: 600 });
+                    const when = planDate === todayKey() ? "pour aujourd'hui" : planDate === tomorrowKey() ? "pour demain" : `le ${new Date(py, pm - 1, pd).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}`;
+                    const finish = () => {
+                      planItemsOnDate(planDate, planItemIds, planLabel);
+                      setAlsoSaveOutfit(false);
+                      setReusableDup(null);
+                      setShowQuickPlanModal(false);
+                    };
+                    return (
+                      <>
+                        <div style={{ background: COLORS.haze, borderRadius: 18, padding: 4 }}>{renderFlatLay(picked, 220)}</div>
+                        <div className="flex items-center justify-between mt-2 mb-5">
+                          <button type="button" onClick={() => setPlanStep("pick")} className="text-xs" style={{ color: COLORS.rose, fontWeight: 700 }}>Modifier les pièces</button>
+                          {renderPaletteDots([...new Set(picked.flatMap(itemColors).map((h) => h.toLowerCase()))].slice(0, 5), 16)}
+                        </div>
+
+                        <p className="text-sm mb-1.5" style={{ fontWeight: 600 }}>Nom</p>
                         <input
-                          type="checkbox"
-                          checked={alsoSaveOutfit}
-                          onChange={(e) => setAlsoSaveOutfit(e.target.checked)}
+                          value={planLabel}
+                          onChange={(e) => setPlanLabel(e.target.value)}
+                          placeholder={mixName}
+                          className="w-full px-4 rounded-xl text-sm mb-4"
+                          style={{ height: 46, border: `1px solid ${COLORS.line}`, outline: "none" }}
                         />
-                        Garder aussi dans mes tenues
-                      </label>
 
-                      {reusableDup && !reusableDup.entryId && renderOutfitDupPanel(reusableDup.m, {
-                        onView: () => { setShowQuickPlanModal(false); setReusableDup(null); changeView("tenues"); setDetailOutfitId(reusableDup.m.outfit.id); },
-                        onForce: () => {
-                          saveAsReusableOutfit(planItemIds, planLabel, undefined, undefined, true);
-                          planItemsOnDate(planDate, planItemIds, planLabel);
-                          setAlsoSaveOutfit(false);
-                          setShowQuickPlanModal(false);
-                        },
-                        forceLabel: "Planifier et l'ajouter",
-                      })}
-                      <button
-                        onClick={() => {
-                          // Doublon possible : on montre l'encadré au-dessus et on attend la réponse.
-                          if (alsoSaveOutfit && !reusableDup && !saveAsReusableOutfit(planItemIds, planLabel)) return;
-                          planItemsOnDate(planDate, planItemIds, planLabel);
-                          setAlsoSaveOutfit(false);
-                          setReusableDup(null);
-                          setShowQuickPlanModal(false);
-                        }}
-                        disabled={planItemIds.length === 0}
-                        className="w-full flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold text-white"
-                        style={{ background: COLORS.rose, opacity: planItemIds.length === 0 ? 0.4 : 1 }}
-                      >
-                        <Plus size={16} /> Enregistrer
-                      </button>
-                    </>
-                  )}
+                        <p className="text-sm mb-1.5" style={{ fontWeight: 600 }}>Quand</p>
+                        <div className="flex gap-2 flex-wrap mb-4">
+                          <button type="button" onClick={() => setPlanDate(todayKey())} className="h-9 px-4 rounded-full text-sm" style={dayChip(planDate === todayKey())}>Aujourd'hui</button>
+                          <button type="button" onClick={() => setPlanDate(tomorrowKey())} className="h-9 px-4 rounded-full text-sm" style={dayChip(planDate === tomorrowKey())}>Demain</button>
+                          {/* Autre date : le sélecteur du téléphone, posé en transparent sur la pastille */}
+                          <span className="relative h-9 px-4 rounded-full text-sm flex items-center" style={dayChip(other)}>
+                            {other ? formatAgendaDate(planDate) : "Autre date…"}
+                            <input type="date" value={planDate} onChange={(e) => e.target.value && setPlanDate(e.target.value)} aria-label="Autre date" className="absolute inset-0 w-full h-full" style={{ opacity: 0 }} />
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-3 px-4 py-3.5 rounded-2xl mb-4" style={{ background: COLORS.haze }}>
+                          <div>
+                            <p className="text-sm" style={{ fontWeight: 600 }}>Garder dans mes tenues</p>
+                            <p className="text-xs" style={{ color: COLORS.muted }}>Pour la reporter plus tard</p>
+                          </div>
+                          {renderSwitch(alsoSaveOutfit, () => { setAlsoSaveOutfit((v) => !v); setReusableDup(null); }, "Garder dans mes tenues")}
+                        </div>
+
+                        {reusableDup && !reusableDup.entryId && renderOutfitDupPanel(reusableDup.m, {
+                          onView: () => { setShowQuickPlanModal(false); setReusableDup(null); changeView("tenues"); setDetailOutfitId(reusableDup.m.outfit.id); },
+                          onForce: () => {
+                            saveAsReusableOutfit(planItemIds, planLabel, undefined, undefined, true);
+                            finish();
+                          },
+                          forceLabel: "Planifier et l'ajouter",
+                        })}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // Doublon possible : on montre l'encadré au-dessus et on attend la réponse.
+                            if (alsoSaveOutfit && !reusableDup && !saveAsReusableOutfit(planItemIds, planLabel)) return;
+                            finish();
+                          }}
+                          className="w-full h-12 rounded-full text-sm"
+                          style={{ background: COLORS.rose, color: "#FFFFFF", fontWeight: 700, boxShadow: "0 6px 16px rgba(255,75,51,0.3)" }}
+                        >
+                          Planifier {when}
+                        </button>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             )}
