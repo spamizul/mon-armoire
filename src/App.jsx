@@ -2565,26 +2565,28 @@ export default function App() {
 
   // "Flat lay" : les pièces de la tenue posées en éventail sur fond blanc, comme sur un lit.
   // Positions (en %) : gauche, haut, largeur, hauteur, rotation.
+  // Photos bien droites : 2 grandes en haut, les autres plus petites en dessous.
+  // Positions en % : gauche, haut, largeur, hauteur, rotation.
   const FLATLAY_LAYOUTS = {
-    1: [[18, 6, 64, 88, 0]],
-    2: [[5, 6, 50, 72, -3], [46, 22, 49, 72, 3]],
-    3: [[4, 4, 50, 56, -3], [50, 8, 46, 52, 3], [26, 52, 44, 44, -1]],
-    4: [[4, 4, 47, 50, -3], [51, 3, 45, 48, 3], [7, 53, 42, 43, 2], [52, 52, 43, 44, -2]],
-    5: [[4, 4, 44, 48, -3], [50, 3, 46, 44, 3], [4, 54, 34, 42, 2], [36, 50, 30, 38, -2], [66, 50, 31, 44, 3]],
-    6: [[3, 4, 32, 44, -3], [35, 3, 31, 44, 2], [67, 5, 30, 42, -2], [3, 52, 32, 44, 2], [35, 51, 31, 44, -2], [67, 52, 30, 43, 3]],
+    1: [[18, 4, 64, 92, 0]],
+    2: [[3, 3, 46.5, 94, 0], [50.5, 3, 46.5, 94, 0]],
+    3: [[3, 3, 46.5, 55, 0], [50.5, 3, 46.5, 55, 0], [26.75, 60, 46.5, 37, 0]],
+    4: [[3, 3, 46.5, 55, 0], [50.5, 3, 46.5, 55, 0], [3, 60, 46.5, 37, 0], [50.5, 60, 46.5, 37, 0]],
+    5: [[3, 3, 46.5, 55, 0], [50.5, 3, 46.5, 55, 0], [3, 60, 30, 37, 0], [35, 60, 30, 37, 0], [67, 60, 30, 37, 0]],
+    6: [[3, 3, 46.5, 55, 0], [50.5, 3, 46.5, 55, 0], [3, 60, 22, 37, 0], [27, 60, 22, 37, 0], [51, 60, 22, 37, 0], [75, 60, 22, 37, 0]],
   };
   // Tenue avec des pièces détourées : on les pose en "silhouette" et elles se chevauchent,
   // comme une vraie tenue étalée sur un lit (veste derrière, haut sur le bas, chaussures en bas…).
   // Positions en % : gauche, haut, largeur, hauteur, rotation, profondeur (z).
   const SILHOUETTE_SLOTS = {
-    Veste: [6, 5, 50, 56, -6, 1],
-    Haut: [28, 3, 48, 44, 2, 3],
-    Chemise: [28, 3, 48, 46, 2, 3],
-    Pull: [28, 3, 48, 46, 2, 3],
-    Robe: [26, 3, 50, 74, 1, 3],
-    Bas: [30, 32, 42, 62, -2, 2],
-    Chaussures: [64, 68, 32, 28, 8, 4],
-    Accessoire: [5, 64, 28, 30, -8, 4],
+    Veste: [6, 5, 50, 56, 0, 1],
+    Haut: [28, 3, 48, 44, 0, 3],
+    Chemise: [28, 3, 48, 46, 0, 3],
+    Pull: [28, 3, 48, 46, 0, 3],
+    Robe: [26, 3, 50, 74, 0, 3],
+    Bas: [30, 32, 42, 62, 0, 2],
+    Chaussures: [64, 68, 32, 28, 0, 4],
+    Accessoire: [5, 64, 28, 30, 0, 4],
   };
   // Composer une tenue : aperçu en direct en haut, une catégorie à la fois dessous, bouton fixe en bas.
   // Utilisé par "Créer une tenue" (le +) et par la planification d'une tenue. La feuille doit avoir pt-3 pb-8.
@@ -2706,7 +2708,7 @@ export default function App() {
               style={{
                 cursor: onPiece ? "pointer" : undefined,
                 position: "absolute", left: `${Math.min(l + shift, 100 - w)}%`, top: `${t + (n - 1) * 6}%`, width: `${w}%`, height: `${h}%`,
-                transform: `rotate(${r + (n - 1) * 6}deg)`, zIndex: z * 10 + n,
+                transform: `rotate(${r}deg)`, zIndex: z * 10 + n,
                 ...(cut ? {} : { borderRadius: 14, overflow: "hidden", boxShadow: "0 4px 14px rgba(0,0,0,0.12)", background: item.hex }),
               }}
             >
