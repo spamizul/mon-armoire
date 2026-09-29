@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Plus, X, Pencil, ChevronDown, Shirt, Layers, Sparkles, Camera, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Settings, Scissors, Check, Crop, MoreVertical, Cloud, CloudOff, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
+import { Plus, X, Pencil, Lock, Unlock, ChevronDown, Shirt, Layers, Sparkles, Camera, Search, Heart, ArrowLeft, Link2, Clock, Calendar, Sun, Settings, Scissors, Check, Crop, MoreVertical, Cloud, CloudOff, CloudRain, CloudSnow, CloudFog, CloudLightning } from "lucide-react";
 import Cropper from "react-easy-crop";
 import { supabase } from "./supabaseClient";
 
@@ -1619,8 +1619,8 @@ export default function App() {
   }
 
   function commitOutfit() {
-    if (!outfitName.trim() || selectedIds.length === 0) return;
-    const newOutfit = { id: Date.now(), name: outfitName, itemIds: selectedIds, favorite: false, wornDates: [], ...outfitTags };
+    if (selectedIds.length === 0) return;
+    const newOutfit = { id: Date.now(), name: outfitName.trim() || nextOutfitName(), itemIds: selectedIds, favorite: false, wornDates: [], ...outfitTags };
     setOutfits((prev) => [...prev, newOutfit]);
     setOutfitName("");
     setSelectedIds([]);
@@ -1749,13 +1749,19 @@ export default function App() {
 
   // La popup du générateur, en étapes.
   // Si la météo réelle est connue, l'étape "Il fait quel temps ?" est sautée.
-  const [wizardSteps, setWizardSteps] = useState(["piece", "meteo", "occasion", "couleur", "preference"]);
-  const WIZARD_STEPS = wizardSteps;
   const [showWizard, setShowWizard] = useState(false);
-  const [wizardStep, setWizardStep] = useState(0);
   // La "pièce en tête" : si choisie, elle sera systématiquement incluse dans la suggestion,
   // et les autres pièces seront piochées en priorité parmi celles qui "vont bien avec" elle.
-  const [wizardBaseItemId, setWizardBaseItemId] = useState(null);
+  // Pièces de départ (plusieurs possibles). Dans le résultat, ce sont aussi les pièces "cadenassées" :
+  // elles restent quand on régénère, seul le reste change.
+  const [wizardBaseIds, setWizardBaseIds] = useState([]);
+  // Sélecteur des pièces de départ ouvert ?
+  const [wizardPicker, setWizardPicker] = useState(false);
+  // Les dernières tenues proposées (listes d'ids), pour ne pas reproposer les mêmes pièces en boucle.
+  const recentSuggestions = useRef([]);
+  function rememberSuggestion(ids) {
+    recentSuggestions.current = [ids, ...recentSuggestions.current].slice(0, 4);
+  }
   // Contrôle l'écran de "composition" puis le résultat affiché dans la popup.
   const [wizardGenerating, setWizardGenerating] = useState(false);
   const [wizardShowResult, setWizardShowResult] = useState(false);
@@ -1780,11 +1786,9 @@ export default function App() {
     if (next && wizardLocalWeather) {
       setWizardWeather(wizardLocalWeather);
       setCurrentWeather(weatherToTag(wizardLocalWeather));
-      setWizardSteps(["piece", "occasion", "couleur", "preference"]);
     } else {
       setWizardWeather(null);
       setCurrentWeather(null);
-      setWizardSteps(["piece", "meteo", "occasion", "couleur", "preference"]);
     }
   }
   const [wizardAddFilter, setWizardAddFilter] = useState("Tous");
@@ -1794,24 +1798,34 @@ export default function App() {
   function detachFromExistingOutfit() {
     if (wizardFromOutfitId) {
       setWizardFromOutfitId(null);
-      setOutfitName(nextOutfitName());
+      setOutfitName("");
     }
   }
 
+  // Une pièce choisie à la main dans le résultat est aussitôt cadenassée (on l'a voulue, on la garde).
   function pickWizardItem(itemId) {
     detachFromExistingOutfit();
     if (wizardSwap === "add") {
       setSelectedIds((prev) => [...prev, itemId]);
+      setWizardBaseIds((prev) => [...prev, itemId]);
     } else {
+      const oldId = selectedIds[wizardSwap];
       setSelectedIds((prev) => prev.map((id, i) => (i === wizardSwap ? itemId : id)));
+      setWizardBaseIds((prev) => [...prev.filter((id) => id !== oldId), itemId]);
     }
     setWizardSwap(null);
   }
 
   function removeWizardItem(index) {
     detachFromExistingOutfit();
+    const oldId = selectedIds[index];
     setSelectedIds((prev) => prev.filter((_, i) => i !== index));
+    setWizardBaseIds((prev) => prev.filter((id) => id !== oldId));
     setWizardSwap(null);
+  }
+
+  function toggleWizardLock(id) {
+    setWizardBaseIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
   // Si non-null, le résultat du générateur sera planifié à cette date au lieu
@@ -1820,8 +1834,9 @@ export default function App() {
 
   function openWizard(targetDate, baseItemId = null) {
     setWizardSwap(null);
-    setWizardBaseItemId(baseItemId); // pas de pièce en tête restée cochée d'une fois sur l'autre (sauf si on en impose une)
+    setWizardBaseIds(baseItemId ? [baseItemId] : []); // pas de pièce de départ restée d'une fois sur l'autre (sauf si on en impose une)
     setWizardPieceCat(null);
+    setWizardPicker(false);
     // Tenue prévue pour demain → on prend la prévision de demain.
     const dayWeather = targetDate && targetDate === tomorrowKey() && weather && weather.tomorrow ? weather.tomorrow : weather;
     setWizardWeather(dayWeather);
@@ -1829,12 +1844,6 @@ export default function App() {
     setWizardUseLocalWeather(true);
     const autoTag = weatherToTag(dayWeather);
     setCurrentWeather(autoTag || null);
-    const steps = autoTag
-      ? ["piece", "occasion", "couleur", "preference"]
-      : ["piece", "meteo", "occasion", "couleur", "preference"];
-    // Pièce déjà choisie (ex. depuis "Redécouvre") : on saute l'étape "Une pièce en tête ?".
-    setWizardSteps(baseItemId ? steps.filter((st) => st !== "piece") : steps);
-    setWizardStep(0);
     setWizardShowResult(false);
     setWizardTargetDate(targetDate || null);
     setShowWizard(true);
@@ -1859,13 +1868,6 @@ export default function App() {
     return "Froid";
   }
 
-  function wizardNext() {
-    setWizardStep((s) => Math.min(s + 1, WIZARD_STEPS.length - 1));
-  }
-
-  function wizardBack() {
-    setWizardStep((s) => Math.max(s - 1, 0));
-  }
 
   // Pioche un vêtement dans une catégorie, en tenant compte de tous les critères choisis
   // et de la pièce en tête si une a été choisie.
@@ -1874,11 +1876,8 @@ export default function App() {
   // "prefOverride" : impose une préférence pour cette catégorie seulement
   // (sert à glisser une pièce phare dans une tenue "Oser du neuf").
   // "avoid" : pièces de la suggestion précédente, à éviter quand on régénère.
-  function randomFrom(category, colorAnchor, optional = false, prefOverride, avoid = new Set(), noPattern = false) {
-    const baseItem = wizardBaseItemId ? items.find((i) => i.id === wizardBaseItemId) : null;
-    if (baseItem && effectiveCategory(baseItem) === category) return baseItem; // la pièce en tête est toujours incluse
-
-    let pool = items.filter((i) => effectiveCategory(i) === category);
+  function randomFrom(category, colorAnchor, optional = false, prefOverride, avoid = new Set(), noPattern = false, pairIds = new Set(), exclude = new Set()) {
+    let pool = items.filter((i) => effectiveCategory(i) === category && !exclude.has(i.id));
     if (pool.length === 0) return undefined;
 
     // Règle "un seul motif par tenue" : s'il y a déjà une pièce à motifs, on prend une pièce unie.
@@ -1888,18 +1887,14 @@ export default function App() {
       else if (optional) return undefined; // pièce facultative : mieux vaut s'en passer
     }
 
-    // Priorité aux pièces liées ("va bien avec") à la pièce en tête, si elle en a dans cette catégorie.
-    if (baseItem) {
-      const paired = pool.filter((i) => (baseItem.pairsWith || []).includes(i.id));
-      if (paired.length > 0) pool = paired;
-    }
-
+    // Météo et occasion : une pièce sans tag compte comme "va avec tout" (sinon on tournait
+    // toujours sur les 2 ou 3 pièces taguées, et le générateur proposait sans cesse la même tenue).
     if (currentWeather) {
-      const filtered = pool.filter((i) => (i.weather || []).includes(currentWeather));
+      const filtered = pool.filter((i) => !(i.weather || []).length || i.weather.includes(currentWeather));
       if (filtered.length > 0) pool = filtered;
     }
     if (genOccasion) {
-      const filtered = pool.filter((i) => (i.occasions || []).includes(genOccasion));
+      const filtered = pool.filter((i) => !(i.occasions || []).length || i.occasions.includes(genOccasion));
       if (filtered.length > 0) pool = filtered;
     }
     if (genColorFamily) {
@@ -1926,23 +1921,26 @@ export default function App() {
     const fresh = pool.filter((i) => !avoid.has(i.id));
     if (fresh.length > 0) pool = fresh;
 
-    // Préférence : plutôt des habitués, ou plutôt des vêtements délaissés qu'on "ose" ressortir.
+    // Préférence : plutôt des habitués, ou plutôt des vêtements délaissés qu'on "ose" ressortir
+    // (on garde au moins 3 candidats, pour que ça varie).
     const pref = prefOverride !== undefined ? prefOverride : genPreference;
     if (pref === "souvent") {
       const sorted = [...pool].sort((a, b) => itemWornDays(b).length - itemWornDays(a).length);
-      pool = sorted.slice(0, Math.max(1, Math.ceil(sorted.length / 2))); // la moitié la plus portée
+      pool = sorted.slice(0, Math.max(3, Math.ceil(sorted.length / 2))); // la moitié la plus portée
     } else if (pref === "oser") {
       const sorted = [...pool].sort((a, b) => itemWornDays(a).length - itemWornDays(b).length);
-      pool = sorted.slice(0, Math.max(1, Math.ceil(sorted.length / 2))); // la moitié la moins portée
+      pool = sorted.slice(0, Math.max(3, Math.ceil(sorted.length / 2))); // la moitié la moins portée
     }
 
-    return pool[Math.floor(Math.random() * pool.length)];
+    // Pièces "va bien avec" les pièces de départ : un peu plus de chances d'être tirées, sans être imposées.
+    const weighted = pool.flatMap((i) => (pairIds.has(i.id) ? [i, i, i] : [i]));
+    return weighted[Math.floor(Math.random() * weighted.length)];
   }
 
   // "Vêtements souvent portés" : cherche parmi tes tenues déjà enregistrées une qui
   // respecte les critères (pièce en tête, météo, occasion, couleurs), en privilégiant
   // les plus portées. Renvoie null si aucune ne convient.
-  function pickExistingOutfit(baseItem, avoid = new Set()) {
+  function pickExistingOutfit(bases, avoid = new Set()) {
     let pool = outfits.filter((o) => {
       const pieces = itemsForOutfit(o);
       return pieces.length >= 2 && pieces.length === o.itemIds.length; // tenue complète (aucune pièce supprimée)
@@ -1950,7 +1948,7 @@ export default function App() {
     // Pas une tenue déjà portée ces 7 derniers jours : on évite de remettre toujours la même.
     const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     pool = pool.filter((o) => !outfitWornDays(o).some((d) => new Date(d).getTime() > weekAgo));
-    if (baseItem) pool = pool.filter((o) => o.itemIds.includes(baseItem.id));
+    if (bases.length) pool = pool.filter((o) => bases.every((b) => o.itemIds.includes(b.id)));
     // Régénérer : pas la même tenue que celle proposée juste avant.
     pool = pool.filter((o) => !(o.itemIds.length > 0 && o.itemIds.every((id) => avoid.has(id))));
     if (currentWeather) pool = pool.filter((o) => (o.weather || []).includes(currentWeather));
@@ -2008,19 +2006,25 @@ export default function App() {
   // On compose jusqu'à 40 tenues au hasard et on garde la première qui respecte toutes les règles
   // (ou, à défaut, celle qui en enfreint le moins).
   function suggestOutfit(avoidIds = [], attempt = 0, best = null) {
-    const avoid = new Set(avoidIds);
-    const baseItem = wizardBaseItemId ? items.find((i) => i.id === wizardBaseItemId) : null;
+    // Pièces de départ / cadenassées : toujours dans la tenue.
+    const bases = wizardBaseIds.map((id) => items.find((i) => i.id === id)).filter(Boolean);
+    const baseSet = new Set(bases.map((b) => b.id));
+    const avoid = new Set(avoidIds.filter((id) => !baseSet.has(id)));
+    const pairIds = new Set(bases.flatMap((b) => b.pairsWith || []));
+    const usedBase = new Set();
+    const hasBaseCat = (cat) => bases.some((b) => effectiveCategory(b) === cat);
     setWizardFromOutfitId(null);
 
     // Habituée : environ 3 fois sur 10, on ressort une de tes tenues existantes (si une convient).
     // Le reste du temps, on compose une nouvelle tenue avec tes pièces les plus portées.
     if (genPreference === "souvent" && Math.random() < 0.3) {
-      const existing = pickExistingOutfit(baseItem, avoid);
+      const existing = pickExistingOutfit(bases, avoid);
       if (existing) {
         setSelectedIds(existing.itemIds);
         setOutfitName(existing.name);
         setOutfitTags({ weather: existing.weather || [], occasions: existing.occasions || [] });
         setWizardFromOutfitId(existing.id);
+        rememberSuggestion(existing.itemIds);
         return;
       }
     }
@@ -2029,14 +2033,20 @@ export default function App() {
     // neutre va avec tout, elle ne fixe donc pas la palette). Les pièces suivantes sont
     // piochées dans cette même famille ou en neutre.
     let colorAnchor = null;
+    if (!genColorFamily) {
+      const colored = bases.find((b) => hexToColorFamily(b.hex) !== "Neutres");
+      if (colored) colorAnchor = hexToColorFamily(colored.hex);
+    }
     // "Oser du neuf" : une seule pièce phare (parmi tes plus portées) pour garder un repère,
     // tout le reste en pièces peu portées. Pas besoin si tu as déjà choisi une pièce en tête.
     let starCat = null;
     // Déjà une pièce à motifs dans la tenue ? (les accessoires ne comptent pas)
-    let hasPattern = !!(baseItem && effectiveCategory(baseItem) !== "Accessoire" && isPatterned(baseItem));
+    let hasPattern = bases.some((b) => effectiveCategory(b) !== "Accessoire" && isPatterned(b));
     function pick(category, optional = false) {
+      const b = bases.find((x) => effectiveCategory(x) === category && !usedBase.has(x.id));
+      if (b) { usedBase.add(b.id); return b; }
       const noPattern = genRules.onePattern && hasPattern && category !== "Accessoire";
-      const item = randomFrom(category, colorAnchor, optional, category === starCat ? "souvent" : undefined, avoid, noPattern);
+      const item = randomFrom(category, colorAnchor, optional, category === starCat ? "souvent" : undefined, avoid, noPattern, pairIds, baseSet);
       if (item && category !== "Accessoire" && isPatterned(item)) hasPattern = true;
       if (item && !colorAnchor && !genColorFamily) {
         const fam = hexToColorFamily(item.hex);
@@ -2059,19 +2069,17 @@ export default function App() {
 
     let base;
     let isDress = false;
-    if (baseItem && effectiveCategory(baseItem) === "Robe") {
-      base = [baseItem];
+    if (hasBaseCat("Robe")) {
+      base = [pick("Robe")];
       isDress = true;
-      const fam = hexToColorFamily(baseItem.hex);
-      if (!genColorFamily && fam !== "Neutres") colorAnchor = fam;
     } else {
       // Une fois sur trois environ, on part sur une robe plutôt que haut + bas séparés
       // (si le dressing en contient au moins une, sinon on retombe sur haut + bas) —
       // sauf si la pièce en tête est justement un haut ou un bas, auquel cas on la respecte.
-      const forceTopBottom = baseItem && (effectiveCategory(baseItem) === "Haut" || effectiveCategory(baseItem) === "Bas");
+      const forceTopBottom = hasBaseCat("Haut") || hasBaseCat("Bas");
       const tryDress = !forceTopBottom && Math.random() < 0.33 && items.some((i) => effectiveCategory(i) === "Robe");
       isDress = tryDress;
-      if (genPreference === "oser" && !baseItem) {
+      if (genPreference === "oser" && bases.length === 0) {
         const slots = tryDress ? ["Robe", "Chaussures"] : ["Haut", "Bas", "Chaussures"];
         starCat = slots[Math.floor(Math.random() * slots.length)];
       }
@@ -2079,7 +2087,7 @@ export default function App() {
     }
 
     const picks = [...base, pick("Chaussures")];
-    const forceInclude = (cat) => baseItem && effectiveCategory(baseItem) === cat;
+    const forceInclude = (cat) => hasBaseCat(cat);
 
     // ── Couche par-dessus le haut (pull OU chemise ouverte), selon la température ──
     //   Chaud (+25 °C) : aucune · Doux (20-25 °C) : parfois une chemise (pas de pull)
@@ -2112,14 +2120,20 @@ export default function App() {
 
     // ── Accessoire : une fois sur deux, s'il s'accorde aux couleurs ──
     if (forceInclude("Accessoire") || Math.random() > 0.5) picks.push(pick("Accessoire", !forceInclude("Accessoire")));
+    // Pièces de départ pas encore placées (ex. deux hauts, ou une robe ET un haut) : ajoutées telles quelles.
+    bases.forEach((b) => { if (!usedBase.has(b.id)) picks.push(b); });
     let found = picks.filter(Boolean);
-    const violations = outfitRuleViolations(found);
+    // Exactement la même tenue qu'une des dernières proposées : on la pénalise fortement.
+    const key = found.map((i) => i.id).sort().join(",");
+    const repeat = recentSuggestions.current.some((ids) => [...ids].sort().join(",") === key);
+    const violations = outfitRuleViolations(found) + (repeat ? 10 : 0);
     const candidate = { found, violations };
     const keep = !best || violations < best.violations ? candidate : best;
     if (violations > 0 && attempt < 40) return suggestOutfit(avoidIds, attempt + 1, keep);
     found = keep.found;
+    rememberSuggestion(found.map((i) => i.id));
     setSelectedIds(found.map((i) => i.id));
-    setOutfitName(found.length >= 2 ? nextOutfitName() : "");
+    setOutfitName(""); // nom facultatif : "Mix 30 sept." ou "Tenue N" par défaut
     // Tombé pile sur une tenue déjà enregistrée ? On le signale (badge "Une de tes tenues").
     const same = findSimilarOutfit(found.map((i) => i.id));
     if (same && same.exact) { setWizardFromOutfitId(same.outfit.id); setOutfitName(same.outfit.name); }
@@ -2131,7 +2145,8 @@ export default function App() {
   // le formulaire de création pour que tu puisses ajuster et enregistrer.
   function wizardGenerate() {
     // Si une tenue est déjà affichée, c'est "Régénérer" : on évite de reproposer ses pièces.
-    const avoidIds = wizardShowResult ? selectedIds : [];
+    // On évite en priorité les pièces des dernières propositions (pas seulement la toute dernière).
+    const avoidIds = [...new Set([...(wizardShowResult ? selectedIds : []), ...recentSuggestions.current.flat()])];
     setWizardSwap(null);
     setWizardGenerating(true);
     setWizardShowResult(false);
@@ -5597,9 +5612,8 @@ export default function App() {
 
             {/* ── Popup du générateur, en étapes — globale, accessible depuis n'importe quel onglet ── */}
             {showWizard && (() => {
-              const step = WIZARD_STEPS[wizardStep];
-              const isFirst = wizardStep === 0;
-              const isLast = wizardStep === WIZARD_STEPS.length - 1;
+              const chipSt = (active) => ({ background: active ? COLORS.ink : "transparent", color: active ? "#FFFFFF" : COLORS.ink, border: `1px solid ${active ? COLORS.ink : COLORS.line}` });
+              const bases = wizardBaseIds.map((id) => items.find((i) => i.id === id)).filter(Boolean);
               return (
                 <div
                   onClick={() => setShowWizard(false)}
@@ -5613,15 +5627,7 @@ export default function App() {
                         <X size={14} />
                       </button>
                     </div>
-                    {!wizardGenerating && !wizardShowResult ? (
-                      <div className="flex gap-1.5 mb-4" aria-label={`Étape ${wizardStep + 1} sur ${WIZARD_STEPS.length}`}>
-                        {WIZARD_STEPS.map((st, idx) => (
-                          <span key={st} style={{ width: idx === wizardStep ? 18 : 6, height: 6, borderRadius: 3, background: idx <= wizardStep ? COLORS.rose : COLORS.line, transition: "width 0.2s" }} />
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="mb-4" />
-                    )}
+                    <div className="mb-3" />
 
                     {/* ── Écran de chargement ── */}
                     {wizardGenerating && (
@@ -5707,18 +5713,30 @@ export default function App() {
                             </p>
                           );
                         })()}
-                        <div className="grid grid-cols-3 gap-2 mb-4">
+                        {/* La tenue en grand */}
+                        {(() => {
+                          const pieces = selectedIds.map((id) => items.find((i) => i.id === id)).filter(Boolean);
+                          return pieces.length > 0 ? (
+                            <div style={{ background: COLORS.haze, borderRadius: 18, padding: 4 }}>{renderFlatLay(pieces, 250)}</div>
+                          ) : (
+                            <div className="flex items-center justify-center text-sm" style={{ height: 150, borderRadius: 18, background: COLORS.haze, color: COLORS.muted }}>Aucune pièce</div>
+                          );
+                        })()}
+
+                        {/* Les pièces : toucher = changer ; cadenas = la garder quand on régénère */}
+                        <div className="grid grid-cols-4 gap-2 mt-3">
                           {selectedIds.map((id, index) => {
                             const item = items.find((i) => i.id === id);
                             if (!item) return null;
+                            const locked = wizardBaseIds.includes(id);
                             return (
                               <div key={item.id} className="relative">
                                 <button
                                   type="button"
                                   onClick={() => setWizardSwap(index)}
                                   aria-label={`Changer : ${item.name}`}
-                                  className="w-full rounded-xl overflow-hidden block"
-                                  style={{ background: COLORS.haze }}
+                                  className="w-full overflow-hidden block"
+                                  style={{ borderRadius: 12, background: COLORS.haze, boxShadow: locked ? `0 0 0 2px ${COLORS.rose}` : "none" }}
                                 >
                                   {item.photo ? (
                                     <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
@@ -5728,12 +5746,13 @@ export default function App() {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => removeWizardItem(index)}
-                                  aria-label={`Retirer : ${item.name}`}
-                                  className="absolute w-6 h-6 rounded-full flex items-center justify-center"
-                                  style={{ top: 5, right: 5, background: "rgba(255,255,255,0.9)", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }}
+                                  onClick={() => toggleWizardLock(id)}
+                                  aria-label={locked ? `Ne plus garder : ${item.name}` : `Garder : ${item.name}`}
+                                  aria-pressed={locked}
+                                  className="absolute w-7 h-7 rounded-full flex items-center justify-center"
+                                  style={{ top: 4, right: 4, background: locked ? COLORS.rose : "rgba(255,255,255,0.92)", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }}
                                 >
-                                  <X size={12} />
+                                  {locked ? <Lock size={13} color="#FFFFFF" strokeWidth={2.5} /> : <Unlock size={13} color={COLORS.muted} strokeWidth={2.2} />}
                                 </button>
                               </div>
                             );
@@ -5742,20 +5761,23 @@ export default function App() {
                             type="button"
                             onClick={() => { setWizardAddFilter("Tous"); setWizardSwap("add"); }}
                             aria-label="Ajouter une pièce"
-                            className="rounded-xl flex items-center justify-center"
-                            style={{ aspectRatio: "1 / 1", border: `1.5px dashed ${COLORS.line}`, color: COLORS.muted }}
+                            className="flex items-center justify-center"
+                            style={{ aspectRatio: "1 / 1", borderRadius: 12, border: `1.5px dashed ${COLORS.line}`, color: COLORS.muted }}
                           >
-                            <Plus size={22} />
+                            <Plus size={20} />
                           </button>
                         </div>
+                        <p className="text-center mt-2 mb-4" style={{ fontSize: 12, color: COLORS.muted }}>
+                          Touche une pièce pour la changer · <Lock size={10} style={{ display: "inline", verticalAlign: "-1px" }} /> pour la garder
+                        </p>
 
                         {!wizardFromOutfitId && (
                           <input
                             value={outfitName}
                             onChange={(e) => setOutfitName(e.target.value)}
-                            placeholder="Nom de la tenue"
-                            className="w-full px-4 py-2.5 rounded-xl text-sm mb-3"
-                            style={{ border: `1px solid ${COLORS.line}`, outline: "none" }}
+                            placeholder={wizardTargetDate ? `Nom (facultatif) · Mix ${(() => { const [y, m, d] = wizardTargetDate.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString("fr-FR", { day: "numeric", month: "short" }); })()}` : `Nom (facultatif) · ${nextOutfitName()}`}
+                            className="w-full px-4 rounded-xl text-sm mb-3"
+                            style={{ height: 46, border: `1px solid ${COLORS.line}`, outline: "none" }}
                           />
                         )}
 
@@ -5768,238 +5790,178 @@ export default function App() {
                         })()}
 
                         <div className="flex gap-2">
-                          <button onClick={wizardGenerate} className="flex items-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold" style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}>
-                            <Sparkles size={14} /> Régénérer
+                          <button onClick={wizardGenerate} className="flex items-center gap-1.5 px-4 h-12 rounded-full text-sm font-bold flex-shrink-0" style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}>
+                            <Sparkles size={14} /> {wizardBaseIds.some((id) => selectedIds.includes(id)) ? "Changer le reste" : "Régénérer"}
                           </button>
                           <button
                             onClick={() => wizardSaveOutfit()}
-                            disabled={selectedIds.length === 0 || (!wizardTargetDate && !outfitName.trim())}
-                            className="flex-1 px-5 h-12 rounded-full text-sm font-bold text-white"
-                            style={{ background: COLORS.rose, opacity: (selectedIds.length === 0 || (!wizardTargetDate && !outfitName.trim())) ? 0.4 : 1 }}
+                            disabled={selectedIds.length === 0}
+                            className="flex-1 px-4 h-12 rounded-full text-sm font-bold text-white"
+                            style={{ background: COLORS.rose, opacity: selectedIds.length === 0 ? 0.4 : 1 }}
                           >
                             {wizardTargetDate ? `Planifier pour ${wizardTargetDate === todayKey() ? "aujourd'hui" : "demain"}` : wizardFromOutfitId ? "Voir la tenue" : "Ajouter à mes tenues"}
                           </button>
                         </div>
-                      </div>
-                    )}
-
-                    {/* ── Questions, une étape à la fois ── */}
-                    {!wizardGenerating && !wizardShowResult && (
-                      <>
-                    {step === "piece" && wizardLocalWeather && (
-                      <div className="flex items-center justify-between gap-3 mb-3 px-3 py-2 rounded-2xl" style={{ background: COLORS.haze }}>
-                        <p className="text-xs flex items-center gap-1.5 min-w-0" style={{ opacity: wizardUseLocalWeather ? 1 : 0.5 }}>
-                          <Sun size={13} className="flex-shrink-0" />
-                          <span className="truncate">
-                            {wizardUseLocalWeather
-                              ? `${wizardTargetDate === tomorrowKey() ? "Demain · " : ""}${weatherToTag(wizardLocalWeather)} · ${wizardLocalWeather.min}° / ${wizardLocalWeather.max}°${wizardLocalWeather.rainChance != null && wizardLocalWeather.rainChance >= 30 ? ` · pluie ${wizardLocalWeather.rainChance} %` : ""}`
-                              : "Météo d'ici non prise en compte"}
-                          </span>
-                        </p>
-                        {/* Interrupteur : météo automatique oui / non */}
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={wizardUseLocalWeather}
-                          aria-label="Utiliser la météo d'ici"
-                          onClick={toggleWizardLocalWeather}
-                          className="flex-shrink-0 relative"
-                          style={{ width: 40, height: 24, borderRadius: 12, background: wizardUseLocalWeather ? COLORS.ink : "#D6D4D0", transition: "background 0.2s" }}
-                        >
-                          <span style={{ position: "absolute", top: 3, left: wizardUseLocalWeather ? 19 : 3, width: 18, height: 18, borderRadius: 9, background: "#FFFFFF", transition: "left 0.2s" }} />
+                        <button type="button" onClick={() => { setWizardSwap(null); setWizardShowResult(false); }} className="w-full text-center text-xs mt-3" style={{ color: COLORS.muted, fontWeight: 600 }}>
+                          Modifier mes critères
                         </button>
                       </div>
                     )}
-                    {step === "piece" && (
-                      <div className="mb-4">
-                        <p className="text-sm font-medium mb-3">Une pièce en tête ?</p>
-                        {/* Pièce choisie : rappel en haut, avec de quoi la retirer */}
-                        {wizardBaseItemId && (() => {
-                          const chosen = items.find((i) => i.id === wizardBaseItemId);
-                          if (!chosen) return null;
-                          return (
-                            <div className="flex items-center gap-3 p-2 pr-3 mb-3 rounded-2xl" style={{ background: "#FDE8E5" }}>
-                              <div className="overflow-hidden flex-shrink-0" style={{ width: 48, height: 48, borderRadius: 10, background: chosen.hex }}>
-                                {chosen.photo && <img src={thumbOf(chosen)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />}
-                              </div>
-                              <p className="flex-1 text-sm truncate" style={{ fontWeight: 600 }}>{chosen.name}</p>
-                              <button type="button" onClick={() => setWizardBaseItemId(null)} aria-label="Retirer la pièce en tête" className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: "#FFFFFF" }}>
-                                <X size={14} />
-                              </button>
-                            </div>
-                          );
-                        })()}
 
-                        {!wizardPieceCat ? (
-                          /* 1. D'abord les catégories, avec un aperçu de leurs couleurs */
-                          <div className="grid grid-cols-2 gap-2">
-                            {CATEGORIES.map((cat) => {
-                              const catItems = sortItems(items.filter((i) => i.category === cat), "couleur");
-                              if (catItems.length === 0) return null;
-                              const dots = [...new Set(catItems.map((i) => (i.hex || "").toLowerCase()).filter(Boolean))].slice(0, 4);
+                    {/* ── Pièces de départ : on en coche autant qu'on veut, une catégorie à la fois ── */}
+                    {!wizardGenerating && !wizardShowResult && wizardPicker && (() => {
+                      const cats = CATEGORIES.filter((c) => items.some((i) => i.category === c));
+                      const cat = cats.includes(wizardPieceCat) ? wizardPieceCat : cats[0];
+                      return (
+                        <>
+                          <div className="flex items-center gap-1 mb-3">
+                            <button type="button" onClick={() => setWizardPicker(false)} aria-label="Retour" className="w-9 h-9 -ml-2 rounded-full flex items-center justify-center">
+                              <ArrowLeft size={18} />
+                            </button>
+                            <p className="text-sm" style={{ fontWeight: 600 }}>Pièces de départ</p>
+                          </div>
+                          <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2 overflow-x-auto mb-3">
+                            {cats.map((c) => {
+                              const active = c === cat;
+                              const has = bases.some((i) => i.category === c);
                               return (
-                                <button
-                                  type="button"
-                                  key={cat}
-                                  onClick={() => setWizardPieceCat(cat)}
-                                  className="flex flex-col items-start gap-2 p-3 rounded-2xl text-left"
-                                  style={{ background: COLORS.haze }}
-                                >
-                                  <span className="flex" style={{ paddingLeft: 5 }}>
-                                    {dots.map((hex) => (
-                                      <span key={hex} style={{ width: 16, height: 16, borderRadius: 8, background: hex, border: "1px solid rgba(0,0,0,0.1)", marginLeft: -5, boxShadow: `0 0 0 2px ${COLORS.haze}` }} />
-                                    ))}
-                                  </span>
-                                  <span className="text-sm" style={{ fontWeight: 600 }}>
-                                    {CATEGORY_PLURALS[cat] || cat} <span style={{ fontWeight: 400, color: COLORS.muted }}>· {catItems.length}</span>
-                                  </span>
+                                <button key={c} type="button" onClick={() => setWizardPieceCat(c)} className="flex-shrink-0 flex items-center gap-1.5 h-9 px-3.5 rounded-full text-sm" style={{ ...chipSt(active), fontWeight: 600 }}>
+                                  {has && <span style={{ width: 6, height: 6, borderRadius: 3, background: COLORS.rose }} />}
+                                  {CATEGORY_PLURALS[c] || c}
                                 </button>
                               );
                             })}
                           </div>
-                        ) : (
-                          /* 2. Puis les pièces de la catégorie choisie seulement */
-                          <div>
-                            <div className="flex items-center gap-1 mb-2">
-                              <button type="button" onClick={() => setWizardPieceCat(null)} aria-label="Retour aux catégories" className="w-9 h-9 -ml-2 rounded-full flex items-center justify-center">
-                                <ArrowLeft size={18} />
-                              </button>
-                              <p className="text-sm" style={{ fontWeight: 600 }}>{CATEGORY_PLURALS[wizardPieceCat] || wizardPieceCat}</p>
-                            </div>
-                            <div className="grid grid-cols-4 gap-2">
-                              {sortItems(items.filter((i) => i.category === wizardPieceCat), "couleur").map((item) => {
-                                const active = wizardBaseItemId === item.id;
-                                return (
-                                  <button
-                                    type="button"
-                                    key={item.id}
-                                    onClick={() => { setWizardBaseItemId(active ? null : item.id); setWizardPieceCat(null); }}
-                                    aria-label={item.name}
-                                    aria-pressed={active}
-                                    className="relative overflow-hidden"
-                                    style={{ aspectRatio: "1 / 1", borderRadius: 12, background: COLORS.haze, boxShadow: active ? `0 0 0 2px ${COLORS.rose}` : "none" }}
-                                  >
-                                    {item.photo ? (
-                                      <img src={thumbOf(item)} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                                    ) : (
-                                      <div style={{ background: item.hex, width: "100%", height: "100%" }} />
-                                    )}
-                                  </button>
-                                );
-                              })}
+                          <div className="grid grid-cols-3 gap-2 pb-4">
+                            {sortItems(items.filter((i) => i.category === cat), "couleur").map((item) => {
+                              const on = wizardBaseIds.includes(item.id);
+                              return (
+                                <button
+                                  type="button"
+                                  key={item.id}
+                                  onClick={() => toggleWizardLock(item.id)}
+                                  aria-label={item.name}
+                                  aria-pressed={on}
+                                  className="relative overflow-hidden"
+                                  style={{ aspectRatio: "1 / 1", borderRadius: 14, background: COLORS.haze, boxShadow: on ? `0 0 0 2.5px ${COLORS.rose}` : "none" }}
+                                >
+                                  {item.photo ? (
+                                    <img src={thumbOf(item)} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                                  ) : (
+                                    <div style={{ background: item.hex, width: "100%", height: "100%" }} />
+                                  )}
+                                  {on && (
+                                    <span className="absolute w-6 h-6 rounded-full flex items-center justify-center" style={{ top: 6, right: 6, background: COLORS.rose }}>
+                                      <Check size={13} color="#FFFFFF" strokeWidth={3.2} />
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div className="sticky -mx-5 px-5 pt-3" style={{ bottom: -32, paddingBottom: 32, background: "#FFFFFF", borderTop: `1px solid ${COLORS.line}` }}>
+                            <button type="button" onClick={() => setWizardPicker(false)} className="w-full h-12 rounded-full text-sm" style={{ background: COLORS.ink, color: "#FFFFFF", fontWeight: 700 }}>
+                              {bases.length ? `OK · ${bases.length} pièce${bases.length > 1 ? "s" : ""}` : "OK"}
+                            </button>
+                          </div>
+                        </>
+                      );
+                    })()}
+
+                    {/* ── Critères, tous sur un seul écran (tous facultatifs) ── */}
+                    {!wizardGenerating && !wizardShowResult && !wizardPicker && (
+                      <>
+                        {wizardLocalWeather && (
+                          <div className="flex items-center justify-between gap-3 mb-4 px-3 py-2 rounded-2xl" style={{ background: COLORS.haze }}>
+                            <p className="text-xs flex items-center gap-1.5 min-w-0" style={{ opacity: wizardUseLocalWeather ? 1 : 0.5 }}>
+                              <Sun size={13} className="flex-shrink-0" />
+                              <span className="truncate">
+                                {wizardUseLocalWeather
+                                  ? `${wizardTargetDate === tomorrowKey() ? "Demain · " : ""}${weatherToTag(wizardLocalWeather)} · ${wizardLocalWeather.min}° / ${wizardLocalWeather.max}°${wizardLocalWeather.rainChance != null && wizardLocalWeather.rainChance >= 30 ? ` · pluie ${wizardLocalWeather.rainChance} %` : ""}`
+                                  : "Météo d'ici non prise en compte"}
+                              </span>
+                            </p>
+                            {renderSwitch(wizardUseLocalWeather, toggleWizardLocalWeather, "Utiliser la météo d'ici")}
+                          </div>
+                        )}
+
+                        {(!wizardLocalWeather || !wizardUseLocalWeather) && (
+                          <div className="mb-5">
+                            <p className="text-sm mb-2" style={{ fontWeight: 600 }}>Quel temps ?</p>
+                            <div className="flex gap-1.5 flex-wrap">
+                              {WEATHER_TAGS.map((w) => (
+                                <button type="button" key={w} onClick={() => setCurrentWeather(currentWeather === w ? null : w)} className="px-4 h-9 rounded-full text-sm" style={chipSt(currentWeather === w)}>{w}</button>
+                              ))}
                             </div>
                           </div>
                         )}
-                      </div>
-                    )}
 
-                    {step === "meteo" && (
-                      <div className="mb-4">
-                        <p className="text-sm font-medium mb-3">Il fait quel temps aujourd'hui ?</p>
-                        <div className="flex gap-1.5 flex-wrap">
-                          {WEATHER_TAGS.map((w) => {
-                            const active = currentWeather === w;
-                            return (
-                              <button type="button" key={w} onClick={() => setCurrentWeather(active ? null : w)} className="px-4 h-9 rounded-full text-sm" style={{
-                                background: active ? COLORS.ink : "transparent",
-                                color: active ? "white" : COLORS.ink,
-                                border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
-                              }}>
-                                {w}
-                              </button>
-                            );
-                          })}
+                        <div className="mb-5">
+                          <p className="text-sm mb-2" style={{ fontWeight: 600 }}>Pièces de départ <span style={{ fontWeight: 400, color: COLORS.muted }}>· facultatif</span></p>
+                          <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2 overflow-x-auto py-1">
+                            {bases.map((item) => (
+                              <div key={item.id} className="relative flex-shrink-0">
+                                <div className="overflow-hidden" style={{ width: 64, height: 64, borderRadius: 12, background: item.hex }}>
+                                  {item.photo && <img src={thumbOf(item)} alt={item.name} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />}
+                                </div>
+                                <button type="button" onClick={() => toggleWizardLock(item.id)} aria-label={`Retirer : ${item.name}`} className="absolute w-5 h-5 rounded-full flex items-center justify-center" style={{ top: -5, right: -5, background: COLORS.ink }}>
+                                  <X size={10} color="#FFFFFF" strokeWidth={3} />
+                                </button>
+                              </div>
+                            ))}
+                            <button type="button" onClick={() => setWizardPicker(true)} className="flex-shrink-0 flex flex-col items-center justify-center gap-0.5" style={{ width: bases.length ? 64 : "auto", height: 64, padding: bases.length ? 0 : "0 16px", borderRadius: 12, border: `1.5px dashed ${COLORS.line}`, color: COLORS.muted }}>
+                              <Plus size={18} />
+                              {!bases.length && <span className="text-xs">Choisir une ou plusieurs pièces</span>}
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    )}
 
-                    {step === "occasion" && (
-                      <div className="mb-4">
-                        <p className="text-sm font-medium mb-3">Pour quelle occasion ?</p>
-                        <div className="flex gap-1.5 flex-wrap">
-                          {OCCASIONS.map((o) => {
-                            const active = genOccasion === o;
-                            return (
-                              <button type="button" key={o} onClick={() => setGenOccasion(active ? null : o)} className="px-4 h-9 rounded-full text-sm" style={{
-                                background: active ? COLORS.ink : "transparent",
-                                color: active ? "white" : COLORS.ink,
-                                border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
-                              }}>
-                                {o}
-                              </button>
-                            );
-                          })}
+                        <div className="mb-5">
+                          <p className="text-sm mb-2" style={{ fontWeight: 600 }}>Occasion</p>
+                          <div className="flex gap-1.5 flex-wrap">
+                            {OCCASIONS.map((o) => (
+                              <button type="button" key={o} onClick={() => setGenOccasion(genOccasion === o ? null : o)} className="px-4 h-9 rounded-full text-sm" style={chipSt(genOccasion === o)}>{o}</button>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    )}
 
-                    {step === "couleur" && (
-                      <div className="mb-4">
-                        <p className="text-sm font-medium mb-3">Quelles couleurs ?</p>
-                        <div className="flex gap-1.5 flex-wrap">
-                          {COLOR_FAMILIES.map((c) => {
-                            const active = genColorFamily === c;
-                            // Nombre de vêtements de cette famille ; famille vide = grisée, non choisissable.
-                            const count = items.filter((i) => itemHasFamily(i, c)).length;
-                            const empty = count === 0;
-                            return (
-                              <button
-                                type="button"
-                                key={c}
-                                disabled={empty}
-                                onClick={() => setGenColorFamily(active ? null : c)}
-                                className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm"
-                                style={{
-                                  background: active ? COLORS.ink : "transparent",
-                                  color: active ? "white" : empty ? "#B5B5B5" : COLORS.ink,
-                                  border: active ? `1px solid ${COLORS.ink}` : empty ? "1px dashed #DDDDDD" : `1px solid ${COLORS.line}`,
-                                }}
-                              >
-                                {c}
-                                <span className="text-xs" style={{ color: active ? "rgba(255,255,255,0.7)" : empty ? "#B5B5B5" : COLORS.muted }}>· {count}</span>
-                              </button>
-                            );
-                          })}
+                        <div className="mb-5">
+                          <p className="text-sm mb-2" style={{ fontWeight: 600 }}>Couleurs</p>
+                          <div className="flex gap-1.5 flex-wrap">
+                            {COLOR_FAMILIES.map((c) => {
+                              const active = genColorFamily === c;
+                              const count = items.filter((i) => itemHasFamily(i, c)).length;
+                              const empty = count === 0;
+                              return (
+                                <button
+                                  type="button"
+                                  key={c}
+                                  disabled={empty}
+                                  onClick={() => setGenColorFamily(active ? null : c)}
+                                  className="px-4 h-9 rounded-full text-sm"
+                                  style={empty ? { color: "#B5B5B5", border: "1px dashed #DDDDDD" } : chipSt(active)}
+                                >
+                                  {c}
+                                </button>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
-                    )}
 
-                    {step === "preference" && (
-                      <div className="mb-4">
-                        <p className="text-sm font-medium mb-3">Des habitués, ou on ose du neuf ?</p>
-                        <div className="flex gap-1.5 flex-wrap">
-                          {[{ key: "souvent", label: "Vêtements souvent portés" }, { key: "oser", label: "Oser du neuf" }].map(({ key, label }) => {
-                            const active = genPreference === key;
-                            return (
-                              <button type="button" key={key} onClick={() => setGenPreference(active ? null : key)} className="px-4 h-9 rounded-full text-sm" style={{
-                                background: active ? COLORS.ink : "transparent",
-                                color: active ? "white" : COLORS.ink,
-                                border: `1px solid ${active ? COLORS.ink : COLORS.line}`,
-                              }}>
-                                {label}
-                              </button>
-                            );
-                          })}
+                        <div className="mb-5">
+                          <p className="text-sm mb-2" style={{ fontWeight: 600 }}>Plutôt</p>
+                          <div className="flex gap-1.5 flex-wrap">
+                            {[{ key: "souvent", label: "Mes habituées" }, { key: "oser", label: "Oser du neuf" }].map(({ key, label }) => (
+                              <button type="button" key={key} onClick={() => setGenPreference(genPreference === key ? null : key)} className="px-4 h-9 rounded-full text-sm" style={chipSt(genPreference === key)}>{label}</button>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    )}
 
-                    <div className="flex gap-2">
-                      {!isFirst && (
-                        <button onClick={wizardBack} className="flex items-center gap-1 px-5 h-12 rounded-full text-sm font-bold" style={{ border: `1px solid ${COLORS.line}`, color: COLORS.ink }}>
-                          <ArrowLeft size={14} /> Précédent
-                        </button>
-                      )}
-                      {!isLast ? (
-                        <button onClick={wizardNext} className="flex-1 px-5 h-12 rounded-full text-sm font-bold text-white" style={{ background: COLORS.rose }}>
-                          Suivant
-                        </button>
-                      ) : (
-                        <button onClick={wizardGenerate} className="flex-1 flex items-center justify-center gap-1.5 px-5 h-12 rounded-full text-sm font-bold text-white" style={{ background: COLORS.rose }}>
-                          <Sparkles size={14} /> Générer la tenue
-                        </button>
-                      )}
-                    </div>
+                        <div className="sticky -mx-5 px-5 pt-3" style={{ bottom: -32, paddingBottom: 32, background: "#FFFFFF", borderTop: `1px solid ${COLORS.line}` }}>
+                          <button onClick={wizardGenerate} className="w-full flex items-center justify-center gap-2 h-12 rounded-full text-sm text-white" style={{ background: COLORS.rose, fontWeight: 700, boxShadow: "0 6px 16px rgba(255,75,51,0.3)" }}>
+                            <Sparkles size={15} /> Générer la tenue
+                          </button>
+                        </div>
                       </>
                     )}
                   </div>
