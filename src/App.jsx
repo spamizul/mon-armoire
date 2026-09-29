@@ -749,6 +749,9 @@ export default function App() {
   // Popup de sélection des vêtements "qui vont bien avec" celui affiché en fiche.
   const [showPairsModal, setShowPairsModal] = useState(false);
 
+  // Idées de tenues gardées dans le jeu "Oui ou non ?" ({ id, itemIds }).
+  const [ideas, setIdeas] = useState([]);
+
   // ── CHARGEMENT / SAUVEGARDE (localStorage) ──
   useEffect(() => {
     const savedItems = localStorage.getItem("mon-armoire-items");
@@ -757,6 +760,7 @@ export default function App() {
     setOutfits(savedOutfits ? JSON.parse(savedOutfits) : []);
     const savedAgenda = localStorage.getItem("mon-armoire-agenda");
     setAgenda(savedAgenda ? JSON.parse(savedAgenda) : {});
+    try { const savedIdeas = localStorage.getItem("mon-armoire-ideas"); if (savedIdeas) setIdeas(JSON.parse(savedIdeas)); } catch {}
     const savedName = localStorage.getItem("mon-armoire-username");
     if (savedName) setUserName(savedName);
     setLoaded(true);
@@ -794,6 +798,11 @@ export default function App() {
     }
   }, [agenda, loaded]);
 
+  useEffect(() => {
+    if (!loaded) return;
+    try { localStorage.setItem("mon-armoire-ideas", JSON.stringify(ideas)); } catch {}
+  }, [ideas, loaded]);
+
   // ── SYNCHRO EN LIGNE (Supabase) ──────────────
   // Principe : ce téléphone garde TOUJOURS sa copie (localStorage), l'appli marche hors ligne.
   // Chaque changement est envoyé en ligne ~1,5 s après. À l'ouverture (et quand on revient
@@ -818,11 +827,13 @@ export default function App() {
       agenda: src.agenda || {},
       userName: src.userName || null,
       rediscoverHidden: src.rediscoverHidden || {},
+      // Seulement s'il y en a : les données déjà synchronisées gardent la même empreinte.
+      ...(src.ideas && src.ideas.length ? { ideas: src.ideas } : {}),
     };
   }
   const payloadHash = (p) => hashString(stableStringify(p));
   const latestPayloadRef = useRef(null);
-  latestPayloadRef.current = syncPayload({ items, outfits, agenda, userName, rediscoverHidden });
+  latestPayloadRef.current = syncPayload({ items, outfits, agenda, userName, rediscoverHidden, ideas });
 
   function markSynced(at, hash) {
     syncedAtRef.current = at;
@@ -846,6 +857,7 @@ export default function App() {
     setOutfits(p.outfits);
     setAgenda(p.agenda);
     setRediscoverHidden(p.rediscoverHidden);
+    setIdeas(p.ideas || []);
     try { localStorage.setItem("mon-armoire-rediscover-hidden", JSON.stringify(p.rediscoverHidden)); } catch {}
     if (p.userName) {
       try { localStorage.setItem("mon-armoire-username", p.userName); } catch {}
@@ -952,7 +964,7 @@ export default function App() {
     setSyncStatus("pending");
     clearTimeout(pushTimer.current);
     pushTimer.current = setTimeout(pushNow, 1500);
-  }, [items, outfits, agenda, userName, rediscoverHidden, loaded, syncCode]);
+  }, [items, outfits, agenda, userName, rediscoverHidden, ideas, loaded, syncCode]);
 
   // À l'ouverture, au retour sur l'appli et au retour du réseau : on vérifie en ligne.
   useEffect(() => {
@@ -1676,6 +1688,7 @@ export default function App() {
     const m = findSimilarOutfit(selectedIds);
     if (m && m.exact) return; // doublon parfait : l'encadré est déjà affiché, rien à enregistrer
     commitOutfit();
+    if (pendingIdeaId) { removeIdea(pendingIdeaId); setPendingIdeaId(null); }
     setOutfitDup(null);
     setShowOutfitForm(false);
     showToast({ text: "Tenue enregistrée ✓", action: "Voir", onAction: () => changeView("tenues") });
@@ -1757,6 +1770,98 @@ export default function App() {
   const [wizardBaseIds, setWizardBaseIds] = useState([]);
   // Sélecteur des pièces de départ ouvert ?
   const [wizardPicker, setWizardPicker] = useState(false);
+  // ── Jeu "Oui ou non ?" : des idées de tenues à garder ou passer d'un glissement ──
+  const [showSwipe, setShowSwipe] = useState(false);
+  // Idées gardées dans le jeu : à part des tenues, à retoucher puis ajouter si on veut.
+  const [ideaViewId, setIdeaViewId] = useState(null);
+  const [pendingIdeaId, setPendingIdeaId] = useState(null);
+  const [swipeDeck, setSwipeDeck] = useState([]); // listes d'ids : [carte du dessus, carte suivante]
+  const [swipeKept, setSwipeKept] = useState(0);
+  const [swipeDrag, setSwipeDrag] = useState({ x: 0, y: 0, active: false, leaving: 0 });
+  const swipeStart = useRef(null);
+  const swipeSeen = useRef(new Set());
+
+  function removeIdea(id) {
+    setIdeas((prev) => prev.filter((x) => x.id !== id));
+  }
+  // Ajoute une idée telle quelle à tes tenues (sauf si elle y est déjà).
+  function ideaToOutfit(idea) {
+    const ids = idea.itemIds.filter((id) => items.some((i) => i.id === id));
+    const m = findSimilarOutfit(ids);
+    removeIdea(idea.id);
+    setIdeaViewId(null);
+    if (m && m.exact) {
+      showToast({ text: "Elle est déjà dans tes tenues", action: "Voir", onAction: () => { changeView("tenues"); setDetailOutfitId(m.outfit.id); } });
+      return;
+    }
+    const newOutfit = { id: Date.now(), name: nextOutfitName(), itemIds: ids, favorite: false, wornDates: [], weather: [], occasions: [] };
+    setOutfits((prev) => [...prev, newOutfit]);
+    showToast({ text: "Ajoutée à tes tenues", action: "Voir", onAction: () => { changeView("tenues"); setDetailOutfitId(newOutfit.id); } });
+  }
+
+  // Une idée de tenue au hasard (sans critères), qui respecte les règles de mode
+  // et n'existe pas déjà dans tes tenues.
+  function generateIdea(extraSeen = []) {
+    const seen = new Set([...swipeSeen.current, ...extraSeen]);
+    const crit = { weather: null, occasion: null, colorFamily: null, pref: null };
+    let best = null;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      let colorAnchor = null;
+      let hasPattern = false;
+      const pick = (cat, optional = false) => {
+        const noPattern = genRules.onePattern && hasPattern && cat !== "Accessoire";
+        const it = randomFrom(cat, colorAnchor, optional, undefined, new Set(), noPattern, new Set(), new Set(), crit);
+        if (it && cat !== "Accessoire" && isPatterned(it)) hasPattern = true;
+        if (it && !colorAnchor) { const f = hexToColorFamily(it.hex); if (f !== "Neutres") colorAnchor = f; }
+        return it;
+      };
+      const dress = Math.random() < 0.25 && items.some((i) => effectiveCategory(i) === "Robe");
+      const picks = dress ? [pick("Robe")] : [pick("Haut"), pick("Bas")];
+      picks.push(pick("Chaussures"));
+      if (Math.random() < 0.4) picks.push(pick(Math.random() < 0.5 ? "Pull" : "Chemise", true));
+      if (Math.random() < 0.4) picks.push(pick("Veste", true));
+      if (Math.random() < 0.35) picks.push(pick("Accessoire", true));
+      const found = picks.filter(Boolean);
+      if (found.length < 2) continue;
+      const ids = found.map((i) => i.id);
+      const key = [...ids].sort().join(",");
+      const v = outfitRuleViolations(found) + (findSimilarOutfit(ids) ? 5 : 0) + (seen.has(key) ? 5 : 0);
+      if (!best || v < best.v) best = { ids, key, v };
+      if (v === 0) break;
+    }
+    if (!best) return null;
+    swipeSeen.current.add(best.key);
+    return best.ids;
+  }
+
+  function openSwipe() {
+    const a = generateIdea();
+    const b = generateIdea(a ? [[...a].sort().join(",")] : []);
+    setSwipeDeck([a, b].filter(Boolean));
+    setSwipeKept(0);
+    setSwipeDrag({ x: 0, y: 0, active: false, leaving: 0 });
+    setShowSwipe(true);
+  }
+
+  // dir : 1 = oui (on garde), -1 = non (on passe). La carte s'envole, puis la suivante monte.
+  function decideSwipe(dir) {
+    const current = swipeDeck[0];
+    if (!current || swipeDrag.leaving) return;
+    setSwipeDrag({ x: dir * 520, y: 0, active: false, leaving: dir });
+    if (dir === 1) {
+      setIdeas((prev) => [{ id: Date.now(), itemIds: current }, ...prev]);
+      setSwipeKept((n) => n + 1);
+    }
+    setTimeout(() => {
+      setSwipeDeck((deck) => {
+        const rest = deck.slice(1);
+        const next = generateIdea();
+        return next ? [...rest, next] : rest;
+      });
+      setSwipeDrag({ x: 0, y: 0, active: false, leaving: 0 });
+    }, 260);
+  }
+
   // Les dernières tenues proposées (listes d'ids), pour ne pas reproposer les mêmes pièces en boucle.
   const recentSuggestions = useRef([]);
   function rememberSuggestion(ids) {
@@ -1876,7 +1981,13 @@ export default function App() {
   // "prefOverride" : impose une préférence pour cette catégorie seulement
   // (sert à glisser une pièce phare dans une tenue "Oser du neuf").
   // "avoid" : pièces de la suggestion précédente, à éviter quand on régénère.
-  function randomFrom(category, colorAnchor, optional = false, prefOverride, avoid = new Set(), noPattern = false, pairIds = new Set(), exclude = new Set()) {
+  const currentWeatherState = currentWeather, genOccasionState = genOccasion, genColorFamilyState = genColorFamily, genPreferenceState = genPreference;
+  function randomFrom(category, colorAnchor, optional = false, prefOverride, avoid = new Set(), noPattern = false, pairIds = new Set(), exclude = new Set(), crit = null) {
+    // "crit" : critères imposés (jeu Oui / Non) à la place de ceux du générateur.
+    const currentWeather = crit ? crit.weather : currentWeatherState;
+    const genOccasion = crit ? crit.occasion : genOccasionState;
+    const genColorFamily = crit ? crit.colorFamily : genColorFamilyState;
+    const genPreference = crit ? crit.pref : genPreferenceState;
     let pool = items.filter((i) => effectiveCategory(i) === category && !exclude.has(i.id));
     if (pool.length === 0) return undefined;
 
@@ -2443,6 +2554,88 @@ export default function App() {
   }
 
   // Petite phrase de conseil sous la météo, selon l'écart de température et la pluie.
+  // "Et demain ?" : en fin de page la journée, tout en haut le soir (à partir de 18 h).
+  function renderTomorrowSection(evening) {
+    return (
+      <>
+        {(tomorrowEntries.length === 0 && evening) ? (
+              <div className="p-4 mb-7" style={{ background: "#FDE8E5", borderRadius: 24 }}>
+                <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Prépare ta tenue de demain</p>
+                {renderTomorrowForecast()}
+                <div className="flex gap-2 mt-3">
+                  <button type="button" onClick={() => openQuickPlan(tomorrowKey())} className="flex-1 h-10 rounded-full text-sm flex items-center justify-center gap-1.5" style={{ background: "#FFFFFF", fontWeight: 600 }}>
+                    <Plus size={15} /> Planifier
+                  </button>
+                  <button type="button" onClick={() => openWizard(tomorrowKey())} className="flex-1 h-10 rounded-full text-sm flex items-center justify-center gap-1.5" style={{ background: COLORS.ink, color: "#FFFFFF", fontWeight: 600 }}>
+                    <Sparkles size={15} /> Me suggérer
+                  </button>
+                </div>
+              </div>
+            ) : tomorrowEntries.length === 0 ? (
+              <button
+                type="button"
+                onClick={() => openQuickPlan(tomorrowKey())}
+                className="w-full flex items-center justify-between py-1 text-left mb-6"
+              >
+                <div>
+                  <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Et demain ?</p>
+                  {renderTomorrowForecast()}
+                  <p className="text-xs mt-0.5" style={{ color: COLORS.muted }}>Rien de prévu</p>
+                </div>
+                <span className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze, color: COLORS.ink }}>
+                  <Plus size={14} />
+                </span>
+              </button>
+            ) : (
+              <div className="p-4 mb-7" style={{ background: COLORS.haze, borderRadius: 24 }}>
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Et demain ?</p>
+                    {renderTomorrowForecast()}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => openQuickPlan(tomorrowKey())}
+                    aria-label="Ajouter une tenue pour demain"
+                    className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
+                    style={{ background: COLORS.ivory, color: COLORS.ink }}
+                  >
+                    <Plus size={14} />
+                  </button>
+                </div>
+                {/* Même présentation que la tenue du jour : photos en grand, nom et palette dessous */}
+                {tomorrowEntries.map((entry) => (
+                  <div key={entry.entryId} className="mb-1">
+                    <div className="relative cursor-pointer" onClick={() => { setShowModalPicker(false); setOpenEntryId(entry.entryId); }}>
+                      {entry.planItems.length === 0 && entry.wornPhoto ? (
+                        <img src={entry.wornPhoto} alt={`Tenue — ${entry.label}`} style={{ width: "100%", height: 330, objectFit: "cover", display: "block", borderRadius: 18 }} />
+                      ) : (
+                        renderFlatLay(entry.planItems, 330)
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); askConfirm("Supprimer cette tenue prévue ?", () => removeAgendaEntry(entry.dateStr, entry.entryId)); }}
+                        aria-label="Supprimer cette tenue prévue"
+                        className="absolute w-7 h-7 rounded-full flex items-center justify-center"
+                        style={{ top: 10, right: 10, background: "rgba(255,255,255,0.9)", zIndex: 2 }}
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 mt-3">
+                      <p className="truncate" style={{ fontSize: 15, fontWeight: 600 }}>{entry.label}</p>
+                      {renderPaletteDots([...new Set(entry.planItems.flatMap(itemColors).map((h) => h.toLowerCase()))].slice(0, 5), 14, COLORS.haze)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+      </>
+    );
+  }
+
+  const isEveningHome = new Date().getHours() >= 18;
+
   // Le conseil suit l'heure : le matin on parle de la journée, l'après-midi de ce qui reste,
   // le soir de la soirée, et à partir de 21 h de demain.
   function weatherAdvice(w) {
@@ -2892,6 +3085,7 @@ export default function App() {
   // Ouvre la création d'une tenue (depuis l'onglet Tenues ou le bouton "+").
   function openCreateOutfit() {
     setCreateOutfitStep("select");
+    setPendingIdeaId(null);
     setPlanCat(null);
     setOutfitTags(EMPTY_OUTFIT_TAGS);
     setOutfitName("");
@@ -2912,6 +3106,7 @@ export default function App() {
       outfits,
       agenda,
       rediscoverHidden,
+      ideas,
     };
     const stamp = new Date().toISOString().slice(0, 10);
     const fileName = `pli-sauvegarde-${stamp}.json`;
@@ -2957,6 +3152,7 @@ export default function App() {
       setItems(data.items);
       setOutfits(data.outfits || []);
       setAgenda(data.agenda || {});
+      setIdeas(data.ideas || []);
       if (data.rediscoverHidden) {
         setRediscoverHidden(data.rediscoverHidden);
         try { localStorage.setItem("mon-armoire-rediscover-hidden", JSON.stringify(data.rediscoverHidden)); } catch {}
@@ -3528,6 +3724,9 @@ export default function App() {
               );
             })()}
 
+            {/* Le soir, on pense d'abord à demain */}
+            {isEveningHome && renderTomorrowSection(true)}
+
             {/* ── Pour aujourd'hui : la tenue en "flat lay", en carrousel s'il y en a plusieurs ── */}
             <div className="p-4 mb-7" style={{ background: COLORS.haze, borderRadius: 24 }}>
               <div className="flex items-center justify-between mb-3">
@@ -3719,6 +3918,23 @@ export default function App() {
               );
             })()}
 
+            {/* ── Jeu "Oui ou non ?" ── */}
+            {items.some((i) => effectiveCategory(i) === "Chaussures") && (items.some((i) => effectiveCategory(i) === "Robe") || (items.some((i) => effectiveCategory(i) === "Haut") && items.some((i) => effectiveCategory(i) === "Bas"))) && (
+              <button type="button" onClick={openSwipe} className="w-full flex items-center gap-3.5 text-left mb-7" style={{ padding: 14, borderRadius: 20, background: COLORS.ink, color: "#FFFFFF" }}>
+                <span className="relative flex-shrink-0" style={{ width: 56, height: 56 }}>
+                  <span className="absolute" style={{ left: 4, top: 6, width: 38, height: 48, borderRadius: 8, background: "#3A3A3A", transform: "rotate(-10deg)" }} />
+                  <span className="absolute flex items-center justify-center" style={{ left: 14, top: 2, width: 38, height: 48, borderRadius: 8, background: COLORS.rose, transform: "rotate(8deg)" }}>
+                    <Heart size={18} color="#FFFFFF" fill="#FFFFFF" />
+                  </span>
+                </span>
+                <span className="flex-1 min-w-0">
+                  <span className="block display" style={{ fontWeight: 700, fontSize: 16 }}>Oui ou non ?</span>
+                  <span className="block text-sm" style={{ opacity: 0.7, marginTop: 2 }}>Des idées de tenues à garder ou passer d'un geste</span>
+                </span>
+                <span className="px-3.5 h-9 rounded-full flex items-center text-sm flex-shrink-0" style={{ background: "#FFFFFF", color: COLORS.ink, fontWeight: 700 }}>Jouer</span>
+              </button>
+            )}
+
             {/* ── Tes couleurs les plus portées (palette pondérée par le nombre de fois porté) ── */}
             {(() => {
               const stats = {};
@@ -3761,69 +3977,8 @@ export default function App() {
               );
             })()}
 
-            {/* ── Et demain ? ── */}
-            {tomorrowEntries.length === 0 ? (
-              <button
-                type="button"
-                onClick={() => openQuickPlan(tomorrowKey())}
-                className="w-full flex items-center justify-between py-1 text-left mb-6"
-              >
-                <div>
-                  <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Et demain ?</p>
-                  {renderTomorrowForecast()}
-                  <p className="text-xs mt-0.5" style={{ color: COLORS.muted }}>Rien de prévu</p>
-                </div>
-                <span className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: COLORS.haze, color: COLORS.ink }}>
-                  <Plus size={14} />
-                </span>
-              </button>
-            ) : (
-              <div className="mb-6">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>Et demain ?</p>
-                    {renderTomorrowForecast()}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => openQuickPlan(tomorrowKey())}
-                    aria-label="Ajouter une tenue pour demain"
-                    className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
-                    style={{ background: COLORS.haze, color: COLORS.ink }}
-                  >
-                    <Plus size={14} />
-                  </button>
-                </div>
-                {tomorrowEntries.map((entry) => (
-                  <div key={entry.entryId} className="mb-3 cursor-pointer" onClick={() => { setShowModalPicker(false); setOpenEntryId(entry.entryId); }}>
-                    <div className="flex items-center justify-between mb-2">
-                      <p className="text-sm truncate" style={{ fontWeight: 600 }}>{entry.label}</p>
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); askConfirm("Supprimer cette tenue prévue ?", () => removeAgendaEntry(entry.dateStr, entry.entryId)); }}
-                        aria-label="Supprimer cette tenue prévue"
-                        className="w-6 h-6 rounded-full flex items-center justify-center"
-                        style={{ background: "rgba(0,0,0,0.06)" }}
-                      >
-                        <X size={13} />
-                      </button>
-                    </div>
-                    <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-                      {entry.planItems.map((item) => (
-                        <div key={item.id} className="rounded-lg overflow-hidden" style={{ background: COLORS.haze }}>
-                          {item.photo ? (
-                            <img loading="lazy" decoding="async" src={thumbOf(item)} alt={item.name} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
-                          ) : (
-                            <div style={{ background: item.hex, aspectRatio: "1 / 1" }} />
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
+            {/* ── Et demain ? (ici en journée ; le soir il remonte en haut) ── */}
+            {!isEveningHome && renderTomorrowSection(false)}
 
             {/* ── Popup "tenue du jour" ── */}
             {openEntryId !== null && (() => {
@@ -4077,6 +4232,30 @@ export default function App() {
             )}
 
 
+
+            {/* ── Idées du jeu "Oui ou non ?" : à part des tenues ── */}
+            {!showOutfitSearch && (() => {
+              const list = ideas.map((idea) => ({ ...idea, pieces: idea.itemIds.map((id) => items.find((i) => i.id === id)).filter(Boolean) })).filter((x) => x.pieces.length >= 2);
+              return (
+                <div className="mb-6">
+                  <div className="flex items-center justify-between mb-2.5">
+                    <p className="display" style={{ fontWeight: 700, fontSize: 16 }}>
+                      Tes idées {list.length > 0 && <span style={{ fontFamily: "inherit", fontWeight: 400, fontSize: 14, color: COLORS.muted }}>· {list.length}</span>}
+                    </p>
+                  </div>
+                  <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2.5 overflow-x-auto py-0.5">
+                    <button type="button" onClick={openSwipe} className="flex-shrink-0 flex flex-col justify-between text-left" style={{ width: 112, height: 112, borderRadius: 16, background: COLORS.ink, color: "#FFFFFF", padding: 12 }}>
+                      <Heart size={20} color={COLORS.rose} fill={COLORS.rose} />
+                      <span>
+                        <span className="block display" style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.2 }}>Oui ou non ?</span>
+                        <span className="block text-xs" style={{ opacity: 0.7, marginTop: 2 }}>{list.length ? "Encore des idées" : "Trouver des idées"}</span>
+                      </span>
+                    </button>
+                    {list.map((idea, k) => renderOutfitTile({ id: idea.id, name: `Idée ${list.length - k}`, itemIds: idea.itemIds }, 112, () => setIdeaViewId(idea.id)))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {(
             <>
@@ -5419,6 +5598,127 @@ export default function App() {
             })()}
 
             {/* ── Pièces d'une tenue prévue : ajouter (ex. des chaussures oubliées) ou retirer, pour ce jour seulement ── */}
+            {/* ── Une idée gardée : l'ajouter telle quelle, la retoucher d'abord, ou la supprimer ── */}
+            {ideaViewId !== null && (() => {
+              const idea = ideas.find((x) => x.id === ideaViewId);
+              if (!idea) return null;
+              const pieces = idea.itemIds.map((id) => items.find((i) => i.id === id)).filter(Boolean);
+              return (
+                <div onClick={() => setIdeaViewId(null)} className="fixed inset-0 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.4)", zIndex: 50 }}>
+                  <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md px-5 pt-3 pb-8" style={{ background: "#FFFFFF", borderRadius: "24px 24px 0 0", maxHeight: "92vh", overflowY: "auto" }}>
+                    <div data-sheet-handle className="flex justify-center -mt-3 pt-3 pb-3" style={{ touchAction: "none", cursor: "grab" }}><span style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E0DC" }} /></div>
+                    <div className="flex items-center justify-between mb-4">
+                      <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Une idée</p>
+                      <button onClick={() => setIdeaViewId(null)} aria-label="Fermer" className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: COLORS.haze }}>
+                        <X size={14} />
+                      </button>
+                    </div>
+                    <div style={{ background: COLORS.haze, borderRadius: 18, padding: 4 }}>{renderFlatLay(pieces, 300)}</div>
+                    <div className="flex items-center justify-between mt-2 mb-5">
+                      <p className="text-xs" style={{ color: COLORS.muted }}>Pas encore dans tes tenues</p>
+                      {renderPaletteDots([...new Set(pieces.flatMap(itemColors).map((h) => h.toLowerCase()))].slice(0, 5), 16)}
+                    </div>
+                    <button type="button" onClick={() => ideaToOutfit(idea)} className="w-full h-12 rounded-full text-sm mb-2" style={{ background: COLORS.rose, color: "#FFFFFF", fontWeight: 700, boxShadow: "0 6px 16px rgba(255,75,51,0.3)" }}>
+                      Ajouter à mes tenues
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { const ids = pieces.map((i) => i.id); setIdeaViewId(null); openCreateOutfit(); setSelectedIds(ids); setPendingIdeaId(idea.id); }}
+                      className="w-full h-12 rounded-full text-sm flex items-center justify-center gap-1.5"
+                      style={{ border: `1px solid ${COLORS.line}`, fontWeight: 700 }}
+                    >
+                      <Pencil size={14} /> La modifier avant
+                    </button>
+                    <button type="button" onClick={() => { removeIdea(idea.id); setIdeaViewId(null); }} className="w-full text-center text-xs mt-4" style={{ color: COLORS.muted, fontWeight: 600 }}>
+                      Supprimer cette idée
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* ── Jeu "Oui ou non ?" : glisser à droite = garder, à gauche = passer ── */}
+            {showSwipe && (() => {
+              const [top, next] = swipeDeck;
+              const topItems = top ? top.map((id) => items.find((i) => i.id === id)).filter(Boolean) : [];
+              const nextItems = next ? next.map((id) => items.find((i) => i.id === id)).filter(Boolean) : [];
+              const { x, y, active, leaving } = swipeDrag;
+              const yes = Math.max(0, Math.min(1, x / 110));
+              const no = Math.max(0, Math.min(1, -x / 110));
+              const progress = Math.min(1, Math.abs(x) / 140);
+              const card = (list, extra) => (
+                <div className="absolute inset-0 flex flex-col" style={{ background: "#FFFFFF", borderRadius: 26, boxShadow: "0 12px 34px rgba(0,0,0,0.14)", padding: 12, ...extra }}>
+                  <div className="flex-1 min-h-0 relative"><div className="absolute inset-0">{renderFlatLay(list, "100%")}</div></div>
+                  <div className="flex items-center justify-between gap-2 px-1 pt-3 pb-1">
+                    <p className="text-sm" style={{ color: COLORS.muted }}>{list.length} pièces</p>
+                    {renderPaletteDots([...new Set(list.flatMap(itemColors).map((h) => h.toLowerCase()))].slice(0, 5), 16)}
+                  </div>
+                </div>
+              );
+              return (
+                <div data-no-swipe className="fixed inset-0 flex flex-col" style={{ background: COLORS.haze, zIndex: 55, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 24px)" }}>
+                  <div className="flex items-center justify-between px-5 mb-4">
+                    <button type="button" onClick={() => setShowSwipe(false)} aria-label="Fermer" className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: "#FFFFFF" }}>
+                      <X size={18} />
+                    </button>
+                    <p className="display" style={{ fontWeight: 700, fontSize: 19 }}>Oui ou non ?</p>
+                    <span className="h-10 px-3 rounded-full flex items-center gap-1.5 text-sm" style={{ background: "#FFFFFF", fontWeight: 700 }}>
+                      <Heart size={14} color={COLORS.rose} fill={COLORS.rose} /> {swipeKept}
+                    </span>
+                  </div>
+
+                  <div className="relative flex-1 mx-5" style={{ minHeight: 0 }}>
+                    {!top ? (
+                      <div className="absolute inset-0 flex items-center justify-center text-center px-8 text-sm" style={{ color: COLORS.muted }}>
+                        Plus d'idées pour l'instant : ajoute des pièces pour en avoir d'autres !
+                      </div>
+                    ) : (
+                      <>
+                        {next && card(nextItems, { transform: `scale(${0.94 + 0.06 * progress}) translateY(${14 - 14 * progress}px)`, transition: active ? "none" : "transform 0.25s" })}
+                        <div
+                          key={top.join(",")}
+                          className="absolute inset-0"
+                          style={{
+                            transform: `translate(${x}px, ${y}px) rotate(${x / 18}deg)`,
+                            transition: active ? "none" : "transform 0.26s ease-out",
+                            touchAction: "none",
+                            cursor: active ? "grabbing" : "grab",
+                            zIndex: 2,
+                          }}
+                          onPointerDown={(e) => { if (leaving) return; swipeStart.current = { x: e.clientX, y: e.clientY }; e.currentTarget.setPointerCapture(e.pointerId); setSwipeDrag({ x: 0, y: 0, active: true, leaving: 0 }); }}
+                          onPointerMove={(e) => { if (!swipeStart.current) return; setSwipeDrag({ x: e.clientX - swipeStart.current.x, y: (e.clientY - swipeStart.current.y) * 0.3, active: true, leaving: 0 }); }}
+                          onPointerUp={() => {
+                            if (!swipeStart.current) return;
+                            swipeStart.current = null;
+                            if (x > 110) decideSwipe(1);
+                            else if (x < -110) decideSwipe(-1);
+                            else setSwipeDrag({ x: 0, y: 0, active: false, leaving: 0 });
+                          }}
+                          onPointerCancel={() => { swipeStart.current = null; setSwipeDrag({ x: 0, y: 0, active: false, leaving: 0 }); }}
+                        >
+                          {card(topItems, {})}
+                          <span className="absolute display" style={{ top: 28, left: 26, padding: "4px 12px", borderRadius: 10, border: `3px solid ${COLORS.rose}`, color: COLORS.rose, fontWeight: 700, fontSize: 26, transform: "rotate(-12deg)", opacity: yes, background: "rgba(255,255,255,0.85)" }}>OUI</span>
+                          <span className="absolute display" style={{ top: 28, right: 26, padding: "4px 12px", borderRadius: 10, border: `3px solid ${COLORS.ink}`, color: COLORS.ink, fontWeight: 700, fontSize: 26, transform: "rotate(12deg)", opacity: no, background: "rgba(255,255,255,0.85)" }}>NON</span>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-center gap-6 mt-6">
+                    <button type="button" onClick={() => decideSwipe(-1)} disabled={!top} aria-label="Non, passer" className="rounded-full flex items-center justify-center" style={{ width: 64, height: 64, background: "#FFFFFF", boxShadow: "0 6px 16px rgba(0,0,0,0.1)" }}>
+                      <X size={28} color={COLORS.ink} strokeWidth={2.4} />
+                    </button>
+                    <button type="button" onClick={() => decideSwipe(1)} disabled={!top} aria-label="Oui, garder" className="rounded-full flex items-center justify-center" style={{ width: 72, height: 72, background: COLORS.rose, boxShadow: "0 8px 20px rgba(255,75,51,0.35)" }}>
+                      <Heart size={30} color="#FFFFFF" fill="#FFFFFF" />
+                    </button>
+                  </div>
+                  <p className="text-center text-xs mt-3" style={{ color: COLORS.muted }}>
+                    {swipeKept > 0 ? `${swipeKept} idée${swipeKept > 1 ? "s" : ""} gardée${swipeKept > 1 ? "s" : ""} · à retrouver dans Tenues` : "Glisse à droite pour garder, à gauche pour passer"}
+                  </p>
+                </div>
+              );
+            })()}
+
             {/* ── Choisir une couleur à la main : pipette sur la photo, nuancier, ou autre nuance ── */}
             {colorSheet && (() => {
               const cs = colorSheet;
