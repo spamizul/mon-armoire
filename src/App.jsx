@@ -2024,6 +2024,32 @@ export default function App() {
   // d'être simplement ajouté aux tenues (utilisé depuis la popup rapide de la page Aujourd'hui).
   const [wizardTargetDate, setWizardTargetDate] = useState(null);
 
+  // Choisir le jour de la tenue dans le générateur (null = pas de date : juste l'ajouter à mes tenues).
+  // La météo suit : celle d'aujourd'hui, la prévision de demain, ou à choisir soi-même pour un autre jour.
+  function setWizardDate(d) {
+    setWizardTargetDate(d);
+    const dayWeather = d === tomorrowKey() ? (weather && weather.tomorrow) || null : !d || d === todayKey() ? weather : null;
+    setWizardLocalWeather(dayWeather);
+    setWizardUseLocalWeather(!!dayWeather);
+    setWizardWeather(dayWeather);
+    setCurrentWeather(weatherToTag(dayWeather) || null);
+  }
+  function renderWizardDateChips() {
+    const other = wizardTargetDate && wizardTargetDate !== todayKey() && wizardTargetDate !== tomorrowKey();
+    const chip = (active) => ({ background: active ? COLORS.ink : "transparent", color: active ? "#FFFFFF" : COLORS.ink, border: `1px solid ${active ? COLORS.ink : COLORS.line}`, fontWeight: 600 });
+    return (
+      <div className="flex gap-1.5 flex-wrap">
+        <button type="button" onClick={() => setWizardDate(todayKey())} className="h-9 px-3.5 rounded-full text-sm" style={chip(wizardTargetDate === todayKey())}>Aujourd'hui</button>
+        <button type="button" onClick={() => setWizardDate(tomorrowKey())} className="h-9 px-3.5 rounded-full text-sm" style={chip(wizardTargetDate === tomorrowKey())}>Demain</button>
+        <span className="relative h-9 px-3.5 rounded-full text-sm flex items-center" style={chip(other)}>
+          {other ? formatAgendaDate(wizardTargetDate) : "Autre date…"}
+          <input type="date" value={wizardTargetDate || ""} onChange={(e) => e.target.value && setWizardDate(e.target.value)} aria-label="Autre date" className="absolute inset-0 w-full h-full" style={{ opacity: 0 }} />
+        </span>
+        <button type="button" onClick={() => setWizardDate(null)} className="h-9 px-3.5 rounded-full text-sm" style={chip(!wizardTargetDate)}>Sans date</button>
+      </div>
+    );
+  }
+
   function openWizard(targetDate, baseItemId = null) {
     setWizardSwap(null);
     setWizardBaseIds(baseItemId ? [baseItemId] : []); // pas de pièce de départ restée d'une fois sur l'autre (sauf si on en impose une)
@@ -6359,6 +6385,8 @@ export default function App() {
                           </button>
                         </div>
 
+                        <div className="mb-3">{renderWizardDateChips()}</div>
+
                         {!wizardFromOutfitId && (
                           <input
                             value={outfitName}
@@ -6387,7 +6415,7 @@ export default function App() {
                             className="flex-1 px-4 h-12 rounded-full text-sm font-bold text-white"
                             style={{ background: COLORS.rose, opacity: selectedIds.length === 0 ? 0.4 : 1 }}
                           >
-                            {wizardTargetDate ? `Planifier pour ${wizardTargetDate === todayKey() ? "aujourd'hui" : "demain"}` : wizardFromOutfitId ? "Voir la tenue" : "Ajouter à mes tenues"}
+                            {wizardTargetDate ? (wizardTargetDate === todayKey() ? "Planifier pour aujourd'hui" : wizardTargetDate === tomorrowKey() ? "Planifier pour demain" : `Planifier le ${(() => { const [y, m, d] = wizardTargetDate.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString("fr-FR", { day: "numeric", month: "short" }); })()}`) : wizardFromOutfitId ? "Voir la tenue" : "Ajouter à mes tenues"}
                           </button>
                         </div>
                         <button type="button" onClick={() => { setWizardSwap(null); setWizardShowResult(false); }} className="w-full text-center text-xs mt-3" style={{ color: COLORS.muted, fontWeight: 600 }}>
@@ -6459,6 +6487,10 @@ export default function App() {
                     {/* ── Critères, tous sur un seul écran (tous facultatifs) ── */}
                     {!wizardGenerating && !wizardShowResult && !wizardPicker && (
                       <>
+                        <div className="mb-4">
+                          <p className="text-sm mb-2" style={{ fontWeight: 600 }}>Pour quand ?</p>
+                          {renderWizardDateChips()}
+                        </div>
                         {wizardLocalWeather && (
                           <div className="flex items-center justify-between gap-3 mb-4 px-3 py-2 rounded-2xl" style={{ background: COLORS.haze }}>
                             <p className="text-xs flex items-center gap-1.5 min-w-0" style={{ opacity: wizardUseLocalWeather ? 1 : 0.5 }}>
