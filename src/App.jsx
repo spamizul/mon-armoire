@@ -393,7 +393,27 @@ const CATEGORY_SORTS = [
 const ALL_ITEMS_VIEW = "__all";
 const ALL_SORTS = [...CATEGORY_SORTS, { id: "mois", label: "Portées ce mois-ci" }];
 // Filtres par tag (météo, occasion), utilisés en haut de la Garde-robe et dans "Toutes les pièces".
-const TAG_SORTS = [...WEATHER_TAGS.map((w) => ({ id: `w:${w}`, label: w })), ...OCCASIONS.map((o) => ({ id: `o:${o}`, label: o }))];
+// Saisons, déduites des tags météo (rien à retaguer) : Chaud/Doux = printemps-été, Frais/Froid = automne-hiver.
+const SEASONS = {
+  ete: { label: "Printemps/Été", tags: ["Chaud", "Doux"] },
+  hiver: { label: "Automne/Hiver", tags: ["Frais", "Froid"] },
+};
+// Printemps-été du 20 mars au 21 septembre, automne-hiver le reste de l'année.
+function currentSeason(d = new Date()) {
+  const m = d.getMonth(), day = d.getDate();
+  const summer = (m > 2 && m < 8) || (m === 2 && day >= 20) || (m === 8 && day < 22);
+  return summer ? "ete" : "hiver";
+}
+function inSeason(obj, season) {
+  return (obj.weather || []).some((w) => SEASONS[season].tags.includes(w));
+}
+const SEASON_ORDER = () => (currentSeason() === "ete" ? ["ete", "hiver"] : ["hiver", "ete"]);
+const TAG_SORTS = [
+  // Dans les filtres, les saisons remplacent Chaud / Doux / Frais / Froid (qui restent sur les fiches).
+  ...SEASON_ORDER().map((k) => ({ id: `s:${k}`, label: SEASONS[k].label })),
+  ...OCCASIONS.map((o) => ({ id: `o:${o}`, label: o })),
+  { id: "n:meteo", label: "Sans météo" },
+];
 // L'ordre des onglets détermine le sens du glissement : passer de "dressing"
 // à "tenues" glisse vers la gauche, l'inverse glisse vers la droite.
 const TAB_ORDER = ["accueil", "dressing", "tenues", "agenda"];
@@ -461,6 +481,17 @@ export default function App() {
   const [nameInput, setNameInput] = useState("");
   // Météo du jour, affichée sur la page Aujourd'hui. "idle"/"loading"/"granted"/"denied"/"error".
   const [weather, setWeather] = useState(null);
+  // Seuils des tags météo (température max de la journée), réglables dans les Paramètres.
+  // Chaud : au-dessus de "chaud" · Doux : à partir de "doux" · Frais : à partir de "frais" · Froid : en dessous.
+  const DEFAULT_TEMPS = { chaud: 25, doux: 20, frais: 14 };
+  const [temps, setTemps] = useState(() => {
+    try { const t = JSON.parse(localStorage.getItem("mon-armoire-temps")); if (t && t.chaud) return { ...DEFAULT_TEMPS, ...t }; } catch {}
+    return DEFAULT_TEMPS;
+  });
+  function updateTemps(next) {
+    setTemps(next);
+    try { localStorage.setItem("mon-armoire-temps", JSON.stringify(next)); } catch {}
+  }
   const [weatherStatus, setWeatherStatus] = useState("idle");
   const [weatherCity, setWeatherCity] = useState("");
   // Page Aujourd'hui : tenue affichée dans le carrousel, et carte "Redécouvre".
@@ -632,7 +663,8 @@ export default function App() {
   const [outfitGroupView, setOutfitGroupView] = useState(null);
   // Page Tenues : tags cochés en haut (on ne garde que les tenues concernées)
   // et ouverture du cadre "Parfaites pour aujourd'hui".
-  const [outfitTagFilter, setOutfitTagFilter] = useState({ fav: false, weather: [], occasions: [] });
+  const EMPTY_OUTFIT_FILTER = { fav: false, weather: [], occasions: [], season: [], nometeo: false };
+  const [outfitTagFilter, setOutfitTagFilter] = useState(EMPTY_OUTFIT_FILTER);
   const [todayPicksOpen, setTodayPicksOpen] = useState(false);
   const [outfitWeatherFilter, setOutfitWeatherFilter] = useState("Tous");
   const [outfitOccasionFilter, setOutfitOccasionFilter] = useState("Tous");
@@ -662,6 +694,7 @@ export default function App() {
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showRules, setShowRules] = useState(false);
+  const [showWeatherInfo, setShowWeatherInfo] = useState(false);
   // Visionneuse du Carnet : id de la photo affichée (null = fermée).
   const [carnetViewId, setCarnetViewId] = useState(null);
   // Popup d'un jour ouverte depuis les rangées par mois : simple visualisation (pas de planification).
@@ -1391,6 +1424,8 @@ export default function App() {
           .filter((i) => categorySort !== "faitmain" || i.handmade)
           .filter((i) => !categorySort.startsWith("w:") || (i.weather || []).includes(categorySort.slice(2)))
           .filter((i) => !categorySort.startsWith("o:") || (i.occasions || []).includes(categorySort.slice(2)))
+          .filter((i) => !categorySort.startsWith("s:") || inSeason(i, categorySort.slice(2)))
+          .filter((i) => categorySort !== "n:meteo" || !(i.weather || []).length)
           .filter((i) => categorySort !== "mois" || itemWornDays(i).some((d) => d.slice(0, 7) === new Date().toISOString().slice(0, 7))),
         ["favoris", "jamais", "mois", "faitmain"].includes(categorySort) || categorySort.includes(":") ? "couleur" : categorySort
       )
@@ -1854,7 +1889,7 @@ export default function App() {
   // et n'existe pas déjà dans tes tenues.
   function generateIdea(extraSeen = []) {
     const seen = new Set([...swipeSeen.current, ...extraSeen]);
-    const crit = { weather: null, occasion: null, colorFamily: null, pref: null };
+    const crit = { weather: null, occasion: null, colorFamily: null, pref: null, seasonTags: SEASONS[currentSeason()].tags };
     let best = null;
     for (let attempt = 0; attempt < 40; attempt++) {
       let colorAnchor = null;
@@ -2019,9 +2054,9 @@ export default function App() {
   }
   function weatherToTag(w) {
     if (!w) return null;
-    if (w.max > 25) return "Chaud";
-    if (w.max >= 20) return "Doux";
-    if (w.max >= 14) return "Frais";
+    if (w.max > temps.chaud) return "Chaud";
+    if (w.max >= temps.doux) return "Doux";
+    if (w.max >= temps.frais) return "Frais";
     return "Froid";
   }
 
@@ -2041,6 +2076,11 @@ export default function App() {
     const genColorFamily = crit ? crit.colorFamily : genColorFamilyState;
     const genPreference = crit ? crit.pref : genPreferenceState;
     let pool = items.filter((i) => effectiveCategory(i) === category && !exclude.has(i.id));
+    // Jeu : pièces de la saison en cours (ou sans tag météo), si possible.
+    if (crit && crit.seasonTags) {
+      const inS = pool.filter((i) => !(i.weather || []).length || i.weather.some((w) => crit.seasonTags.includes(w)));
+      if (inS.length > 0) pool = inS;
+    }
     if (pool.length === 0) return undefined;
 
     // Règle "un seul motif par tenue" : s'il y a déjà une pièce à motifs, on prend une pièce unie.
@@ -2236,9 +2276,9 @@ export default function App() {
     const rainy = isRainyDay(wizardWeather);
     let tempLevel = null;
     if (["Chaud", "Doux", "Frais", "Froid"].includes(currentWeather)) tempLevel = currentWeather;
-    else if (wizardWeather) tempLevel = wizardWeather.max > 25 ? "Chaud" : wizardWeather.max >= 20 ? "Doux" : wizardWeather.max >= 14 ? "Frais" : "Froid";
+    else if (wizardWeather) tempLevel = weatherToTag(wizardWeather);
     // Au-delà de 25 °C, plus de veste ni de chemise par-dessus.
-    const tooHot = wizardWeather ? wizardWeather.max > 25 : currentWeather === "Chaud";
+    const tooHot = wizardWeather ? wizardWeather.max > temps.chaud : currentWeather === "Chaud";
     // Gros écart entre le matin et l'après-midi (8 °C ou plus, avec un matin sous 15 °C) :
     // on prévoit une veste à retirer dans la journée, même si l'après-midi est doux.
     const bigSwing = wizardWeather ? wizardWeather.max - wizardWeather.min >= 8 && wizardWeather.min < 15 : false;
@@ -2376,19 +2416,23 @@ export default function App() {
   // Toutes les tenues, filtrées par les tags cochés : dans un même groupe (météo, occasion),
   // il suffit d'un tag en commun ; entre groupes, il faut respecter chacun.
   const outfitQ = normalizeName(outfitQuery);
-  const hasOutfitFilter = outfitTagFilter.fav || outfitTagFilter.weather.length > 0 || outfitTagFilter.occasions.length > 0 || !!outfitQ;
+  const hasOutfitFilter = outfitTagFilter.fav || outfitTagFilter.nometeo || outfitTagFilter.weather.length > 0 || outfitTagFilter.occasions.length > 0 || outfitTagFilter.season.length > 0 || !!outfitQ;
   const filteredOutfits = outfitsByRecent.filter((o) => {
     // Recherche : dans le nom de la tenue ou dans le nom de ses pièces
     if (outfitQ && !normalizeName(o.name).includes(outfitQ) && !(o.itemIds || []).some((id) => normalizeName((items.find((i) => i.id === id) || {}).name).includes(outfitQ))) return false;
     if (outfitTagFilter.fav && !o.favorite) return false;
     if (outfitTagFilter.weather.length > 0 && !outfitTagFilter.weather.some((w) => (o.weather || []).includes(w))) return false;
     if (outfitTagFilter.occasions.length > 0 && !outfitTagFilter.occasions.some((x) => (o.occasions || []).includes(x))) return false;
+    if (outfitTagFilter.season.length > 0 && !outfitTagFilter.season.some((k) => inSeason(o, k))) return false;
+    if (outfitTagFilter.nometeo && (o.weather || []).length) return false;
     return true;
-  });
+  })
+    // Les tenues de la saison en cours d'abord (puis les plus récentes, comme avant).
+    .sort((a, b) => Number(inSeason(b, currentSeason())) - Number(inSeason(a, currentSeason())));
   function toggleOutfitFilter(group, value) {
     setOutfitTagFilter((prev) =>
-      group === "fav"
-        ? { ...prev, fav: !prev.fav }
+      group === "fav" || group === "nometeo"
+        ? { ...prev, [group]: !prev[group] }
         : { ...prev, [group]: prev[group].includes(value) ? prev[group].filter((v) => v !== value) : [...prev[group], value] }
     );
   }
@@ -2719,10 +2763,10 @@ export default function App() {
     const eveMin = evening.length ? Math.round(Math.min(...evening)) : w.temp;
     if (h < 17) {
       if (w.temp - eveMin >= 6 && eveMin < 15) return `Ça va se rafraîchir ce soir (${eveMin}°) : garde une veste sous la main.`;
-      if (w.temp > 30) return "Grosse chaleur cet après-midi : matières légères, pas besoin de veste.";
-      if (w.temp > 25) return "Il fait chaud cet après-midi : matières légères, pas besoin de veste.";
-      if (w.temp >= 20) return "Doux cet après-midi : une chemise ou une veste légère suffit.";
-      if (w.temp >= 14) return "Frais cet après-midi : une couche en plus, et une veste.";
+      if (w.temp > Math.max(30, temps.chaud + 3)) return "Grosse chaleur cet après-midi : matières légères, pas besoin de veste.";
+      if (w.temp > temps.chaud) return "Il fait chaud cet après-midi : matières légères, pas besoin de veste.";
+      if (w.temp >= temps.doux) return "Doux cet après-midi : une chemise ou une veste légère suffit.";
+      if (w.temp >= temps.frais) return "Frais cet après-midi : une couche en plus, et une veste.";
       return "Il fait froid : pull chaud et veste de rigueur.";
     }
     if (eveMin < 10) return `Froid ce soir (${eveMin}°) : pull et veste si tu ressors.`;
@@ -2736,10 +2780,10 @@ export default function App() {
     const swing = w.max - w.min;
     if (isRainyDay(w)) return "Pluie prévue : prends une veste ou un imper.";
     if (swing >= 8 && w.min < 15) return "Frais ce matin, plus doux ensuite : prévois une veste que tu peux enlever.";
-    if (w.max > 30) return "Grosse chaleur : matières légères, pas besoin de veste.";
-    if (w.max > 25) return "Il fait chaud : matières légères, pas besoin de veste.";
-    if (w.max >= 20) return "Temps doux : une chemise ou une veste légère suffit.";
-    if (w.max >= 14) return "Temps frais : ajoute une couche, et une veste.";
+    if (w.max > Math.max(30, temps.chaud + 3)) return "Grosse chaleur : matières légères, pas besoin de veste.";
+    if (w.max > temps.chaud) return "Il fait chaud : matières légères, pas besoin de veste.";
+    if (w.max >= temps.doux) return "Temps doux : une chemise ou une veste légère suffit.";
+    if (w.max >= temps.frais) return "Temps frais : ajoute une couche, et une veste.";
     return "Il fait froid : pull chaud et veste de rigueur.";
   }
 
@@ -4260,7 +4304,7 @@ export default function App() {
                 </div>
                 {categoryItems.length === 0 ? (
                   <p className="text-sm py-10 text-center" style={{ color: COLORS.muted }}>
-                    {categorySort === "favoris" ? "Aucun favori" : categorySort === "jamais" ? "Tout a déjà été porté" : categorySort === "mois" ? "Rien de porté ce mois-ci" : categorySort === "faitmain" ? "Aucune pièce faite main ici" : categorySort.includes(":") ? `Aucune pièce taguée « ${categorySort.slice(2)} »` : "Vide"}
+                    {categorySort === "favoris" ? "Aucun favori" : categorySort === "jamais" ? "Tout a déjà été porté" : categorySort === "mois" ? "Rien de porté ce mois-ci" : categorySort === "faitmain" ? "Aucune pièce faite main ici" : categorySort === "n:meteo" ? "Toutes tes pièces ont une météo" : categorySort.includes(":") ? `Aucune pièce « ${(TAG_SORTS.find((t) => t.id === categorySort) || {}).label || categorySort.slice(2)} »` : "Vide"}
                   </p>
                 ) : (
                   <div className="grid grid-cols-3 gap-2">
@@ -4286,7 +4330,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
-                  if (showOutfitSearch) { setOutfitQuery(""); setOutfitTagFilter({ fav: false, weather: [], occasions: [] }); }
+                  if (showOutfitSearch) { setOutfitQuery(""); setOutfitTagFilter(EMPTY_OUTFIT_FILTER); }
                   setShowOutfitSearch((v) => !v);
                 }}
                 aria-label={showOutfitSearch ? "Fermer la recherche" : "Rechercher"}
@@ -4378,8 +4422,9 @@ export default function App() {
                 <div data-no-swipe className="no-scrollbar -mx-5 px-5 flex gap-2 overflow-x-auto">
                   {[
                     { group: "fav", value: "fav", label: "Favorites", active: outfitTagFilter.fav },
-                    ...WEATHER_TAGS.map((w) => ({ group: "weather", value: w, label: w, active: outfitTagFilter.weather.includes(w) })),
+                    ...SEASON_ORDER().map((k) => ({ group: "season", value: k, label: SEASONS[k].label, active: outfitTagFilter.season.includes(k) })),
                     ...OCCASIONS.map((o) => ({ group: "occasions", value: o, label: o, active: outfitTagFilter.occasions.includes(o) })),
+                    { group: "nometeo", value: "nometeo", label: "Sans météo", active: outfitTagFilter.nometeo },
                   ].map((t) => (
                     <button
                       key={t.group + t.value}
@@ -4406,7 +4451,7 @@ export default function App() {
                 {filteredOutfits.length === 0 ? (
                   <div className="py-8 text-center">
                     <p className="text-sm mb-3" style={{ color: COLORS.muted }}>Aucune tenue trouvée</p>
-                    <button type="button" onClick={() => { setOutfitTagFilter({ fav: false, weather: [], occasions: [] }); setOutfitQuery(""); }} className="text-sm" style={{ color: COLORS.rose, fontWeight: 500 }}>
+                    <button type="button" onClick={() => { setOutfitTagFilter(EMPTY_OUTFIT_FILTER); setOutfitQuery(""); }} className="text-sm" style={{ color: COLORS.rose, fontWeight: 500 }}>
                       Tout afficher
                     </button>
                   </div>
@@ -4968,6 +5013,57 @@ export default function App() {
                     <button type="button" onClick={requestWeather} className="px-4 h-9 rounded-full text-sm" style={{ background: COLORS.haze, fontWeight: 600 }}>
                       {weatherStatus === "granted" ? "Actualiser" : "Activer"}
                     </button>
+                  </div>
+
+                  {/* Tags météo : ce que veulent dire Chaud / Doux / Frais / Froid */}
+                  <div className="py-3" style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                    <button type="button" onClick={() => setShowWeatherInfo((v) => !v)} aria-expanded={showWeatherInfo} className="w-full flex items-center justify-between gap-3 text-left">
+                      <div>
+                        <p style={{ fontSize: 15, fontWeight: 600 }}>Tags météo et saisons</p>
+                        <p className="text-xs" style={{ color: COLORS.muted }}>Chaud, doux, frais, froid : à quelles températures ?</p>
+                      </div>
+                      <ChevronDown size={18} style={{ transform: showWeatherInfo ? "rotate(180deg)" : "none", transition: "transform 0.2s", flexShrink: 0 }} />
+                    </button>
+                    {showWeatherInfo && (
+                      <div className="mt-3 flex flex-col gap-2">
+                        {(() => {
+                          // Petit sélecteur − 25° + ; les seuils restent dans le bon ordre (froid < frais < doux ≤ chaud).
+                          const stepper = (key, min, max) => (
+                            <span className="flex items-center gap-1 flex-shrink-0">
+                              <button type="button" aria-label="Moins" disabled={temps[key] <= min} onClick={() => updateTemps({ ...temps, [key]: temps[key] - 1 })} className="w-7 h-7 rounded-full flex items-center justify-center text-base" style={{ background: "#FFFFFF", opacity: temps[key] <= min ? 0.35 : 1, fontWeight: 700 }}>−</button>
+                              <span className="text-sm text-center" style={{ fontWeight: 700, minWidth: 32 }}>{temps[key]}°</span>
+                              <button type="button" aria-label="Plus" disabled={temps[key] >= max} onClick={() => updateTemps({ ...temps, [key]: temps[key] + 1 })} className="w-7 h-7 rounded-full flex items-center justify-center text-base" style={{ background: "#FFFFFF", opacity: temps[key] >= max ? 0.35 : 1, fontWeight: 700 }}>+</button>
+                            </span>
+                          );
+                          const rows = [
+                            ["Chaud", `au-dessus de ${temps.chaud}°`, "Ni veste ni couche par-dessus", stepper("chaud", temps.doux, 40)],
+                            ["Doux", `de ${temps.doux} à ${temps.chaud}°`, "Parfois une chemise ouverte ou une veste légère", stepper("doux", temps.frais + 1, temps.chaud)],
+                            ["Frais", `de ${temps.frais} à ${temps.doux - 1}°`, "Une couche en plus et une veste", stepper("frais", -10, temps.doux - 1)],
+                            ["Froid", `moins de ${temps.frais}°`, "Pull et veste", null],
+                          ];
+                          return rows.map(([tag, range, tip, ctrl]) => (
+                            <div key={tag} className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl" style={{ background: COLORS.haze }}>
+                              <div className="min-w-0">
+                                <p className="text-sm" style={{ fontWeight: 700 }}>{tag} <span style={{ fontWeight: 500, color: COLORS.muted }}>· {range}</span></p>
+                                <p className="text-xs" style={{ color: COLORS.muted }}>{tip}</p>
+                              </div>
+                              {ctrl}
+                            </div>
+                          ));
+                        })()}
+                        {(temps.chaud !== DEFAULT_TEMPS.chaud || temps.doux !== DEFAULT_TEMPS.doux || temps.frais !== DEFAULT_TEMPS.frais) && (
+                          <button type="button" onClick={() => updateTemps(DEFAULT_TEMPS)} className="self-start text-xs" style={{ color: COLORS.rose, fontWeight: 700 }}>
+                            Remettre les réglages d'origine
+                          </button>
+                        )}
+                        <p className="text-xs mt-1" style={{ color: COLORS.muted, lineHeight: 1.5 }}>
+                          C'est la température maximale de la journée qui compte. S'il pleut, ou si le matin est bien plus frais que l'après-midi, le générateur ajoute une veste.
+                        </p>
+                        <p className="text-xs" style={{ color: COLORS.muted, lineHeight: 1.5 }}>
+                          <span style={{ fontWeight: 700, color: COLORS.ink }}>Printemps/Été</span> = Chaud ou Doux · <span style={{ fontWeight: 700, color: COLORS.ink }}>Automne/Hiver</span> = Frais ou Froid. Une pièce taguée des deux côtés compte pour les deux saisons.
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   {/* Synchro */}
